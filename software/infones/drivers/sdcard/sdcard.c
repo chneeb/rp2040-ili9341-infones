@@ -115,46 +115,28 @@ static void CS_LOW(void)
 static
 void init_spi(void)
 {
-	/* GPIO pin configuration */
-	/* pull up of MISO is MUST (10Kohm external pull up is recommended) */
-	/* Set drive strength and slew rate if needed to meet wire condition */
-	gpio_init(SDCARD_PIN_SPI0_SCK);
-	//gpio_pull_up(SDCARD_PIN_SPI0_SCK);
-	//gpio_set_drive_strength(SDCARD_PIN_SPI0_SCK, PADS_BANK0_GPIO0_DRIVE_VALUE_4MA); // 2mA, 4mA (default), 8mA, 12mA
-	//gpio_set_slew_rate(SDCARD_PIN_SPI0_SCK, 0); // 0: SLOW (default), 1: FAST
-
-	gpio_init(SDCARD_PIN_SPI0_MISO);
-	gpio_pull_up(SDCARD_PIN_SPI0_MISO);
-	//gpio_set_schmitt(SDCARD_PIN_SPI0_MISO, 1); // 0: Off, 1: On (default)
-
-	gpio_init(SDCARD_PIN_SPI0_MOSI);
-	gpio_pull_up(SDCARD_PIN_SPI0_MOSI);
-	//gpio_set_drive_strength(SDCARD_PIN_SPI0_MOSI, PADS_BANK0_GPIO0_DRIVE_VALUE_4MA); // 2mA, 4mA (default), 8mA, 12mA
-	//gpio_set_slew_rate(SDCARD_PIN_SPI0_MOSI, 0); // 0: SLOW (default), 1: FAST
-
+	/* CS pin is unique to the SD card (not shared with display). Init as GPIO. */
 	gpio_init(SDCARD_PIN_SPI0_CS);
-	//gpio_pull_up(SDCARD_PIN_SPI0_CS);
-	//gpio_set_drive_strength(SDCARD_PIN_SPI0_CS, PADS_BANK0_GPIO0_DRIVE_VALUE_4MA); // 2mA, 4mA (default), 8mA, 12mA
-	//gpio_set_slew_rate(SDCARD_PIN_SPI0_CS, 0); // 0: SLOW (default), 1: FAST
 	gpio_set_dir(SDCARD_PIN_SPI0_CS, GPIO_OUT);
 
 	/* chip _select invalid*/
 	CS_HIGH();
 
-#ifndef SDCARD_PIO
-	gpio_set_function(SDCARD_PIN_SPI0_SCK, GPIO_FUNC_SPI);
+	/* MISO: set SPI function and enable pull-up.
+	 * gpio_set_function() alone does NOT call gpio_init(), so it won't reset
+	 * the shared SCK/MOSI pins. We must set MISO here because display_init()
+	 * skips it when LCD_MISO == -1 (ST7789 write-only), leaving GPIO 12 in
+	 * GPIO_FUNC_NULL. Without this, SPI1 RX reads garbage (always 0x00),
+	 * wait_ready() never sees 0xFF, and CMD0 is never sent. */
 	gpio_set_function(SDCARD_PIN_SPI0_MISO, GPIO_FUNC_SPI);
-	gpio_set_function(SDCARD_PIN_SPI0_MOSI, GPIO_FUNC_SPI);
+	gpio_pull_up(SDCARD_PIN_SPI0_MISO);
 
+#ifndef SDCARD_PIO
+	/* SCK and MOSI are shared with the display driver which already called
+	 * gpio_set_function() on them — do NOT call gpio_init() on those pins.
+	 * We DO call spi_init() to reset the peripheral and clear residual state
+	 * from high-speed display operations. */
 	spi_init(SDCARD_SPI_BUS, CLK_SLOW);
-
-	/* SPI0 parameter config */
-	spi_set_format(SDCARD_SPI_BUS,
-		8, /* data_bits */
-		SPI_CPOL_0, /* cpol */
-		SPI_CPHA_0, /* cpha */
-		SPI_MSB_FIRST /* order */
-	);
 #else
     gpio_set_dir(SDCARD_PIN_SPI0_SCK, GPIO_OUT);
     gpio_set_dir(SDCARD_PIN_SPI0_MISO, GPIO_OUT);
@@ -356,13 +338,15 @@ DSTATUS disk_initialize (
 
 	if (drv) return STA_NOINIT;			/* Supports only drive 0 */
 	init_spi();							/* Initialize SPI */
-    sleep_ms(10);
+    sleep_ms(100); /* Give card time to stabilize after SPI peripheral reset */
 
 	if (Stat & STA_NODISK) return Stat;	/* Is card existing in the soket? */
 
 	FCLK_SLOW();
-	CS_LOW();
-	for (n = 10; n; n--) xchg_spi(0xFF);	/* Send 80 dummy clocks */
+	/* Send dummy clocks with CS=HIGH so the card enters/resets to SPI mode.
+	 * The spec requires 74+ clocks; send 160 (20 bytes) to give more margin
+	 * and help flush any mid-response state left by a watchdog reboot. */
+	for (n = 20; n; n--) xchg_spi(0xFF);	/* Send 160 dummy clocks (CS=HIGH) */
 
 	ty = 0;
 	if (send_cmd(CMD0, 0) == 1) {			/* Put the card SPI/Idle state */

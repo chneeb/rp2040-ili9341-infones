@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 # Initialise pico_sdk from installed location
 # (note this can come from environment, CMake cache etc)
-set(PICO_SDK_PATH "../../../pico-sdk")
+#set(PICO_SDK_PATH "../../../pico-sdk")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
@@ -34,22 +34,23 @@ pico_enable_stdio_usb(infoNES 1)
 target_link_libraries(infoNES pico_stdlib)
 
 set(SD_SPI "spi1" CACHE STRING "Specify the SPI bus for the SD card")
-set(SD_CS "13" CACHE STRING "Specify the Chip Select GPIO pin for the SD card")
+set(SD_CS "22" CACHE STRING "Specify the Chip Select GPIO pin for the SD card")
 set(SD_SCK "10" CACHE STRING "Specify de Clock GPIO pin for the SD card")
 set(SD_MOSI "11" CACHE STRING "Select the Master Out Slave In GPIO pin for the SD card")
 set(SD_MISO "12" CACHE STRING "Select the Master In Slave Out GPIO pin for the SD card")
 
-set(LCD_CONTROLLER "ILI9341" CACHE STRING "Select the LCD controller type")
-#set(LCD_CONTROLLER "ST7789" CACHE STRING "Select the LCD controller type")
+#set(LCD_CONTROLLER "ILI9341" CACHE STRING "Select the LCD controller type")
+set(LCD_CONTROLLER "ST7789" CACHE STRING "Select the LCD controller type")
 
-set(LCD_SPI "spi0")
-set(LCD_DC "20")
-set(LCD_CS "17")
-set(LCD_CLK "18")
-set(LCD_MOSI "19")
-set(LCD_RST "21")
-set(LCD_BL "22")
-set(LCD_MISO "-1")
+set(LCD_SPI "spi1")
+set(LCD_DC "8")
+set(LCD_CS "9")
+set(LCD_CLK "10")
+set(LCD_MOSI "11")
+set(LCD_RST "15")
+set(LCD_BL "13")
+set(LCD_MISO "-1")  # ST7789 is write-only; SDO must be physically disconnected from GPIO 12
+set(TOUCH_CS "16")  # XPT2046 touch controller CS — shares spi1 with LCD and SD card
 
 message("SD card SPI         : ${SD_SPI}")
 message("SD card CS          : ${SD_CS}")
@@ -79,11 +80,13 @@ target_compile_definitions(infoNES PRIVATE
     DISPLAY_PIN_RST=${LCD_RST}
     DISPLAY_PIN_BL=${LCD_BL}
     DISPLAY_PIN_MISO=${LCD_MISO}
+    TOUCH_PIN_CS=${TOUCH_CS}
 )
 if(LCD_CONTROLLER STREQUAL "ILI9341")
     add_compile_definitions(ILI9341)
 elseif(LCD_CONTROLLER STREQUAL "ST7789")
     add_compile_definitions(ST7789)
+    add_compile_definitions(DISPLAY_INVERT)
 endif()
 
 # Add any user requested libraries

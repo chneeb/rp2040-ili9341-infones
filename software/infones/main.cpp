@@ -70,7 +70,7 @@
 #endif
 
 #ifdef ST7789
-#define    DISPLAY_SPI_CLOCK_SPEED_HZ 33000000
+#define    DISPLAY_SPI_CLOCK_SPEED_HZ 62500000
 #endif
 
 #define    DISPLAY_PIXEL_FORMAT DCS_PIXEL_FORMAT_16BIT
@@ -90,20 +90,19 @@
 #define    DISPLAY_HEIGHT 240
 
 
-#undef    DISPLAY_INVERT 
+//#undef    DISPLAY_INVERT 
 
 
 #include "audio.h"
 
 
-#define PIN_UP 9
-#define PIN_DN 5
-#define PIN_LT 8
-#define PIN_RT 6
-#define PIN_SL 28
-#define PIN_ST 4
-#define PIN_A 2
-#define PIN_B 3
+#define NUNCHUCK_I2C  i2c1
+#define NUNCHUCK_SDA  26
+#define NUNCHUCK_SCL  27
+#define NUNCHUCK_ADDR 0x52
+
+static void nunchuck_init();
+static bool nunchuck_read(uint8_t data[8]);
 
 const uint LED_PIN = PICO_DEFAULT_LED_PIN;
 
@@ -222,7 +221,7 @@ static FATFS fs;
 char *romName;
 namespace
 {
-    constexpr uint32_t CPUFreqKHz = 252000;
+    constexpr uint32_t CPUFreqKHz = 300000;
 
 //    constexpr dvi::Config dviConfig_PicoDVI = {
 //        .pinTMDS = {10, 12, 14},
@@ -477,19 +476,28 @@ void InfoNES_PadState(DWORD *pdwPad1, DWORD *pdwPad2, DWORD *pdwSystem)
     ++rapidFireCounter;
     bool reset = false;
     
+    uint8_t nc[8];
+    bool nc_ok = nunchuck_read(nc);
+    // Buttons are active low in bytes 6 and 7
+    uint8_t b6 = nc_ok ? nc[6] : 0xFF;
+    uint8_t b7 = nc_ok ? nc[7] : 0xFF;
+
     for (int i = 0; i < 2; ++i){
 
-    
     auto &dst = i == 0 ? *pdwPad1 : *pdwPad2;
+    if (i != 0) {
+        dst = 0;
+        continue;
+    }
     int v=0;
-    if (gpio_get(PIN_A)==0)      v |= _AA;
-    if (gpio_get(PIN_B)==0)      v |= _BB;
-    if (gpio_get(PIN_ST)==0)      v |= _START;
-    if (gpio_get(PIN_SL)==0)      v |= _SELECT;
-    if (gpio_get(PIN_LT)==0)      v |= _LEFT;
-    if (gpio_get(PIN_RT)==0)      v |= _RIGHT;
-    if (gpio_get(PIN_UP)==0)      v |= _UP;
-    if (gpio_get(PIN_DN)==0)      v |= _DOWN;
+    if (!(b7 & 0x01)) v |= _UP;
+    if (!(b6 & 0x40)) v |= _DOWN;
+    if (!(b7 & 0x02)) v |= _LEFT;
+    if (!(b6 & 0x80)) v |= _RIGHT;
+    if (!(b7 & 0x10)) v |= _AA;
+    if (!(b7 & 0x40)) v |= _BB;
+    if (!(b6 & 0x10)) v |= _SELECT;
+    if (!(b6 & 0x04)) v |= _START;
 
     int rv = v;
         if (rapidFireCounter % 8 == 0)
@@ -771,13 +779,6 @@ void ili9341_infones_frame_timing_register_init()
 #endif
         display_set_address(x+((320-256)/2), 4, (x+((320-256)/2)+256-1), (240-4-1));
 
-////
-        /*
-         *   keep chip select active, let the next data be written continuously
-         */
-        gpio_put(DISPLAY_PIN_DC, 1);
-        gpio_put(DISPLAY_PIN_CS, 0);
-
 }
 void st7789_infones_frame_timing_register_init()
 {
@@ -787,15 +788,8 @@ void st7789_infones_frame_timing_register_init()
 
 
 
-        display_set_address(x+((160-128)/2), 4/2, (x+((160-128)/2)+128-1), (240-4-1)/2);
-
-////
-        /*
-         *   keep chip select active, let the next data be written continuously
-         */
-        gpio_put(DISPLAY_PIN_DC, 1);
-        gpio_put(DISPLAY_PIN_CS, 0);
-
+        display_set_address(x+((320-256)/2), 4, (x+((320-256)/2)+256-1), (240-4-1));
+        /* CS stays HIGH — will be driven low at the start of the first rendered scanline */
 }
 
 
@@ -831,63 +825,15 @@ static void __not_in_flash_func(speed_control)(void)
 static BYTE old_frame_skip_counter;
 void __not_in_flash_func(core1_main)()
 {
-    /*
-    *
-    * AUDIO (parallel process)
-    *
-    */
+    audio_init(7, 22050);
 
-    #ifdef ILI9341
-     audio_init(7,19654);
-    #endif
-    #ifdef ST7789
-     audio_init(7,20000);
-    #endif
+    while (true) {
+        uint8_t *buf = audio_get_buffer();
+        if (!buf) continue;
 
-    // Buffer interaction variables
-    uint8_t play_buffers[2][1024]; 
-    int buf_sel = 0;
-
-    // Pre-fill ring buffer a bit? 
-    // Not strictly necessary as loop handles empty case.
-    
-    while (true)
-    {
-        // Check availability
-        int available = audioRing.readable_size();
-        
-        // We want reasonable chunks, but if buffer is getting full, read more?
-        // Max chunk that fits in our temp buffer is 1024.
-        int chunk = (available > 1024) ? 1024 : available;
-        
-        // Don't play tiny chunks unless we have to (latency vs overhead)
-        // But if we wait too long, silence happens. 
-        // audio_mixer_step() keeps running silence if no source active.
-        
-        if (chunk > 0) {
-            int read_len = audioRing.read(play_buffers[buf_sel], chunk);
-            
-            // Queue for playback
-            int id = audio_play_once(play_buffers[buf_sel], read_len);
-            
-            // Toggle buffer for next time
-            buf_sel = 1 - buf_sel;
-            
-            // Pump mixer until this source finishes
-            // This ensures meaningful sequential playback without complex source queueing logic
-            if (id >= 0) {
-                while(audio_is_source_active(id)) {
-                    audio_mixer_step();
-                    // optional: sleep_us(10)? 
-                    // No, tightly loop to not miss DMA window
-                }
-            } else {
-                // Failed to play (no source?), just pump mixer
-                audio_mixer_step();
-            }
-        } else {
-             // starve case
-             audio_mixer_step();
+        int n = audioRing.read(buf, AUDIO_BUFFER_SIZE);
+        if (n < AUDIO_BUFFER_SIZE) {
+            memset(buf + n, 128, AUDIO_BUFFER_SIZE - n);
         }
     }
 }
@@ -1198,9 +1144,14 @@ void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
     }        
 #ifdef ILI9341
                 dma_channel_wait_for_finish_blocking(display_dma_channel);
-        // memcpy(scanline_buf_outgoing,scanline_buf_internal,sizeof(scanline_buf_outgoing));
+                if (line == 0) {
+                    while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
+                    display_set_address((320-256)/2, 4, (320-256)/2+255, 240-4-1);
+                    gpio_put(DISPLAY_PIN_DC, 1);
+                    gpio_put(DISPLAY_PIN_CS, 0);
+                }
                 dma_channel_set_trans_count(display_dma_channel, 256*2, false);
-                dma_channel_set_read_addr(display_dma_channel, fb, true);   
+                dma_channel_set_read_addr(display_dma_channel, fb, true);
                 // dma_channel_wait_for_finish_blocking(display_dma_channel);             
 // static uint32_t frame_counter=0;
 //         if(screen_y == 4){
@@ -1234,16 +1185,18 @@ void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
 //         }
 #endif
 #ifdef ST7789
-    if(line % 2 == 0){
-        dma_channel_wait_for_finish_blocking(display_dma_channel);
-        int j=0;
-        for(int i=0;i<256;i+=2,j++){
-            scanline_buf_outgoing[j] = fb[i];
-        } 
-        dma_channel_set_trans_count(display_dma_channel, 128*2, false);
-        dma_channel_set_read_addr(display_dma_channel, scanline_buf_outgoing, true);   
-        // dma_channel_wait_for_finish_blocking(display_dma_channel);             
+    dma_channel_wait_for_finish_blocking(display_dma_channel);
+    if (line == 4) {
+        /* First rendered scanline: drain SPI TX FIFO, then reset the write pointer
+         * to the start of the frame window. This corrects any corruption of the
+         * display write pointer caused by SD card SPI traffic on the shared bus. */
+        while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
+        display_set_address((320-256)/2, 4, (320-256)/2+255, 240-4-1);
+        gpio_put(DISPLAY_PIN_DC, 1);
+        gpio_put(DISPLAY_PIN_CS, 0);
     }
+    dma_channel_set_trans_count(display_dma_channel, 256*2, false);
+    dma_channel_set_read_addr(display_dma_channel, fb, true);
 #endif
                 /* Set CS high to ignore any traffic on SPI bus. */
                 // gpio_put(DISPLAY_PIN_CS, 1);
@@ -1289,34 +1242,35 @@ int InfoNES_Menu()
 
 
 
+static void nunchuck_init() {
+    i2c_init(NUNCHUCK_I2C, 400 * 1000);
+    gpio_set_function(NUNCHUCK_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(NUNCHUCK_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(NUNCHUCK_SDA);
+    gpio_pull_up(NUNCHUCK_SCL);
+    uint8_t init1[] = {0xF0, 0x55};
+    i2c_write_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, init1, 2, false);
+    sleep_ms(1);
+    uint8_t init2[] = {0xFB, 0x00};
+    i2c_write_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, init2, 2, false);
+    sleep_ms(1);
+    uint8_t init3[] = {0xFE, 0x03};
+    i2c_write_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, init3, 2, false);
+    sleep_ms(1);
+}
+
+static bool nunchuck_read(uint8_t data[8]) {
+    uint8_t reg = 0x00;
+    if (i2c_write_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, &reg, 1, false) < 0)
+        return false;
+    sleep_us(200);
+    return i2c_read_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, data, 8, false) == 8;
+}
+
 static void key_init() {
-    gpio_init(PIN_UP);
-    gpio_pull_up(PIN_UP);
-    gpio_set_dir(PIN_UP, GPIO_IN);
-    gpio_init(PIN_DN);
-    gpio_pull_up(PIN_DN);
-    gpio_set_dir(PIN_DN, GPIO_IN);
-    gpio_init(PIN_LT);
-    gpio_pull_up(PIN_LT);
-    gpio_set_dir(PIN_LT, GPIO_IN);
-    gpio_init(PIN_RT);
-    gpio_pull_up(PIN_RT);
-    gpio_set_dir(PIN_RT, GPIO_IN);
-    gpio_init(PIN_ST);
-    gpio_pull_up(PIN_ST);
-    gpio_set_dir(PIN_ST, GPIO_IN);
-    gpio_init(PIN_SL);
-    gpio_pull_up(PIN_SL);
-    gpio_set_dir(PIN_SL, GPIO_IN);
-    gpio_init(PIN_A);
-    gpio_pull_up(PIN_A);
-    gpio_set_dir(PIN_A, GPIO_IN);
-    gpio_init(PIN_B);
-    gpio_pull_up(PIN_B);
-    gpio_set_dir(PIN_B, GPIO_IN);
     gpio_init(25);
     gpio_set_dir(25, GPIO_OUT);
-
+    nunchuck_init();
 }
 
 
@@ -1450,9 +1404,9 @@ void display_clear()
     }
 #endif
 #ifdef ST7789
-    display_set_address(0,0,160-1,128-1);
+    display_set_address(0,0,320-1,240-1);
     BYTE pixel[2]={0x00,0x00};
-    for(int i=0;i<160*128;i+=1){
+    for(int i=0;i<320*240;i+=1){
         display_write_data(pixel,2);
     }
 #endif
@@ -1467,11 +1421,19 @@ bool initSDCard()
     sleep_ms(1000);
 
     printf("Mounting SDcard");
-    fr = f_mount(&fs, "", 1);
+    fr = FR_NOT_READY;
+    for (int attempt = 0; attempt < 3 && fr != FR_OK; attempt++) {
+        if (attempt > 0) {
+            printf(" retry %d", attempt);
+            sleep_ms(500);
+        }
+        fr = f_mount(&fs, "", 1);
+    }
     if (fr != FR_OK)
     {
         snprintf(ErrorMessage, ERRORMESSAGESIZE, "SD card mount error: %d", fr);
         printf("%s\n", ErrorMessage);
+        spi_set_baudrate(DISPLAY_SPI_PORT, DISPLAY_SPI_CLOCK_SPEED_HZ);
         return false;
     }
     printf("\n");
@@ -1481,6 +1443,7 @@ bool initSDCard()
     {
         snprintf(ErrorMessage, ERRORMESSAGESIZE, "Cannot change dir to / : %d", fr);
         printf("%s\n", ErrorMessage);
+        spi_set_baudrate(DISPLAY_SPI_PORT, DISPLAY_SPI_CLOCK_SPEED_HZ);
         return false;
     }
     // for f_getcwd to work, set
@@ -1491,6 +1454,7 @@ bool initSDCard()
     {
         snprintf(ErrorMessage, ERRORMESSAGESIZE, "Cannot get current dir: %d", fr);
         printf("%s\n", ErrorMessage);
+        spi_set_baudrate(DISPLAY_SPI_PORT, DISPLAY_SPI_CLOCK_SPEED_HZ);
         return false;
     }
     printf("Current directory: %s\n", str);
@@ -1506,9 +1470,13 @@ bool initSDCard()
         {
             snprintf(ErrorMessage, ERRORMESSAGESIZE, "Cannot create dir %s: %d", GAMESAVEDIR, fr);
             printf("%s\n", ErrorMessage);
+            spi_set_baudrate(DISPLAY_SPI_PORT, DISPLAY_SPI_CLOCK_SPEED_HZ);
             return false;
         }
     }
+    // SD card init left SPI at CLK_FAST (30 MHz). Restore the display's
+    // configured speed so display performance is not affected.
+    spi_set_baudrate(DISPLAY_SPI_PORT, DISPLAY_SPI_CLOCK_SPEED_HZ);
     return true;
 }
 
@@ -1532,10 +1500,23 @@ int main()
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 1);
 
+    /* Assert SD card CS and touch controller CS HIGH before display init.
+     * The SD card, LCD, and XPT2046 touch controller all share spi1.
+     * Any CS that floats low will cause that device to respond to SPI traffic
+     * and drive MISO low, blocking disk_initialize() wait_ready(). */
+    gpio_init(SDCARD_PIN_SPI0_CS);
+    gpio_set_dir(SDCARD_PIN_SPI0_CS, GPIO_OUT);
+    gpio_put(SDCARD_PIN_SPI0_CS, 1);
+
+    /* XPT2046 touch controller CS — must not float */
+    gpio_init(TOUCH_PIN_CS);
+    gpio_set_dir(TOUCH_PIN_CS, GPIO_OUT);
+    gpio_put(TOUCH_PIN_CS, 1);
+
     // display = hagl_init();
     // hagl_clear(display);
 
-    display_init(); 
+    display_init();
     display_clear();
 #ifdef ILI9341
     ili9341_infones_frame_timing_register_init();
@@ -1636,7 +1617,7 @@ int main()
 
     // InfoNES_Main();
 
-    isFatalError = !initSDCard();
+    isFatalError = true; // initSDCard() bypassed — using single flash ROM
     // When a game is started from the menu, the menu will reboot the device.
     // After reboot the emulator will start the selected game.
     if (watchdog_caused_reboot() && isFatalError == false)
