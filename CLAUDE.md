@@ -13,7 +13,7 @@ RP2350-based handheld NES emulator using InfoNES, driving an ST7789 (or ILI9341)
 ### MCU & Clocks
 - **MCU**: RP2350 (Cortex-M33)
 - **CPU clock**: 300 MHz (`CPUFreqKHz = 300000`)
-- **ST7789 SPI clock**: 62.5 MHz (`DISPLAY_SPI_CLOCK_SPEED_HZ 62500000`)
+- **ST7789 SPI clock**: 80 MHz (`DISPLAY_SPI_CLOCK_SPEED_HZ 80000000`)
 - **ILI9341 SPI clock**: 63 MHz (`DISPLAY_SPI_CLOCK_SPEED_HZ 63000000`)
 
 ### Pins: ST7789 on spi1 (shared with SD card)
@@ -64,8 +64,8 @@ Button mapping — active low, bytes 6 and 7:
 
 ### Display Rendering
 - NES outputs 256×240 pixels; display is 320×240 (landscape via MADCTL MV=1, BGR=1)
-- Image is centered: 32px border left/right (`(320-256)/2 = 32`), 4px border top/bottom
-- Window: columns 32–287, rows 4–235 (232 rows)
+- Image is scaled 256→320 (nearest-neighbor, in-place right-to-left) and fills the full width; 4px border top/bottom
+- Window: columns 0–319, rows 4–235 (232 rows)
 - ST7789 DISPLAY_ADDRESS_MODE = `DCS_ADDRESS_MODE_BGR | DCS_ADDRESS_MODE_SWAP_XY | DCS_ADDRESS_MODE_MIRROR_Y` (0xA8)
 - ILI9341 DISPLAY_ADDRESS_MODE = `DCS_ADDRESS_MODE_BGR | DCS_ADDRESS_MODE_SWAP_XY` (0x28)
 - ST7789 uses `DISPLAY_INVERT` define (set in CMakeLists.txt)
@@ -74,15 +74,15 @@ Button mapping — active low, bytes 6 and 7:
 - Two ping-pong buffers: `scanline_buf_internal_1` / `scanline_buf_internal_2` (WORD[320])
 - InfoNES renders scanlines 4–235 only (232 scanlines), controlled by `PPU_Scanline >= 4 && PPU_Scanline < 236` in `InfoNES.cpp`
 - `InfoNES_PreDrawLine(line)` — sets InfoNES line buffer (buf1 for even, buf2 for odd lines)
-- `InfoNES_PostDrawLine(line)` — waits for previous DMA, then starts DMA for current line
-- DMA: `DMA_SIZE_8`, 512 bytes per scanline (256 pixels × 2 bytes), DREQ-paced to SPI TX FIFO
-- 232 scanlines × 256 pixels = 59,392 pixels = exactly fills the 256×232 window with no drift
-- At 62.5 MHz SPI: ~15.2 ms per frame → ceiling of ~66 fps (sufficient for NES 60 fps)
+- `InfoNES_PostDrawLine(line)` — scales 256→320 in-place, waits for previous DMA, then starts DMA for current line
+- DMA: `DMA_SIZE_8`, 640 bytes per scanline (320 pixels × 2 bytes), DREQ-paced to SPI TX FIFO
+- 232 scanlines × 320 pixels = 74,240 pixels per frame
+- At 80 MHz SPI: ~14.8 ms per frame → ceiling of ~67 fps (sufficient for NES 60 fps)
 
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` caps at 60 fps (waits if frame finishes early)
 - No display frame skipping is currently active (all frames DMA'd to display)
-- The 60 fps cap + 62.5 MHz SPI + 300 MHz RP2350 achieves correct NES game speed
+- The 60 fps cap + 80 MHz SPI + 300 MHz RP2350 achieves correct NES game speed
 
 ### Shared SPI Bus (CRITICAL)
 The SD card and LCD share **the same SPI bus (spi1)** with CLK/MOSI/MISO on GPIO 10/11/12. They use different CS pins (LCD CS=9, SD CS=22). If display CS is LOW while the SD card is accessed, the display receives SD card SPI traffic as pixel data, corrupting the write pointer.
@@ -118,6 +118,9 @@ The SD card driver switches to `CLK_SLOW` (100 kHz) for init then `CLK_FAST` (30
 
 ### Dead Code: ILI9341 per-frame reset (line == 0)
 The ILI9341 PostDrawLine has `if (line == 0)` but `line` is always 4–235, so this block never executes.
+
+### SD Card Init Bypassed
+`initSDCard()` is never called in `main()`. `isFatalError = true` is set unconditionally, so the watchdog-reboot SD ROM loading path is permanently skipped. The device uses a single ROM flashed directly to flash at `0x10080000`. The SD card hardware fixes (CS/MISO) are in place but untested.
 
 ## Build
 ```bash
