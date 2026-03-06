@@ -70,7 +70,7 @@
 #endif
 
 #ifdef ST7789
-#define    DISPLAY_SPI_CLOCK_SPEED_HZ 62500000
+#define    DISPLAY_SPI_CLOCK_SPEED_HZ 80000000
 #endif
 
 #define    DISPLAY_PIXEL_FORMAT DCS_PIXEL_FORMAT_16BIT
@@ -1146,11 +1146,12 @@ void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
                 dma_channel_wait_for_finish_blocking(display_dma_channel);
                 if (line == 0) {
                     while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
-                    display_set_address((320-256)/2, 4, (320-256)/2+255, 240-4-1);
+                    display_set_address(0, 4, 319, 235);
                     gpio_put(DISPLAY_PIN_DC, 1);
                     gpio_put(DISPLAY_PIN_CS, 0);
                 }
-                dma_channel_set_trans_count(display_dma_channel, 256*2, false);
+                for (int i = 319; i >= 0; i--) fb[i] = fb[i * 256 / 320];
+                dma_channel_set_trans_count(display_dma_channel, 320*2, false);
                 dma_channel_set_read_addr(display_dma_channel, fb, true);
                 // dma_channel_wait_for_finish_blocking(display_dma_channel);             
 // static uint32_t frame_counter=0;
@@ -1191,11 +1192,12 @@ void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
          * to the start of the frame window. This corrects any corruption of the
          * display write pointer caused by SD card SPI traffic on the shared bus. */
         while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
-        display_set_address((320-256)/2, 4, (320-256)/2+255, 240-4-1);
+        display_set_address(0, 4, 319, 235);
         gpio_put(DISPLAY_PIN_DC, 1);
         gpio_put(DISPLAY_PIN_CS, 0);
     }
-    dma_channel_set_trans_count(display_dma_channel, 256*2, false);
+    for (int i = 319; i >= 0; i--) fb[i] = fb[i * 256 / 320];
+    dma_channel_set_trans_count(display_dma_channel, 320*2, false);
     dma_channel_set_read_addr(display_dma_channel, fb, true);
 #endif
                 /* Set CS high to ignore any traffic on SPI bus. */
