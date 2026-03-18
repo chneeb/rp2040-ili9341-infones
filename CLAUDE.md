@@ -11,9 +11,9 @@ RP2350-based handheld NES emulator using InfoNES, driving an ST7789 (or ILI9341)
 ## Hardware Configuration (Current)
 
 ### MCU & Clocks
-- **MCU**: RP2350 (Cortex-M33)
-- **CPU clock**: 300 MHz (`CPUFreqKHz = 300000`)
-- **ST7789 SPI clock**: 80 MHz (`DISPLAY_SPI_CLOCK_SPEED_HZ 80000000`)
+- **MCU**: RP2350 (Cortex-M33) — default; RP2040 also supported (see Build)
+- **CPU clock**: derived from chip via `PICO_RP2350` cmake variable — 300 MHz for RP2350, 252 MHz for RP2040
+- **ST7789 SPI clock**: 80 MHz (`DISPLAY_SPI_CLOCK_SPEED_HZ 80000000`); on RP2040 actual rate is ~63 MHz (252 MHz sys / 4)
 - **ILI9341 SPI clock**: 63 MHz (`DISPLAY_SPI_CLOCK_SPEED_HZ 63000000`)
 
 ### Pins: ST7789 on spi1 (shared with SD card)
@@ -79,7 +79,7 @@ Button mapping — active low, bytes 6 and 7:
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` caps at 60 fps (waits if frame finishes early)
 - No display frame skipping is currently active (all frames DMA'd to display)
-- The 60 fps cap + 80 MHz SPI + 300 MHz RP2350 achieves correct NES game speed
+- The 60 fps cap + 80 MHz SPI + 300 MHz RP2350 achieves correct NES game speed; RP2040 at 252 MHz is sufficient but closer to the margin
 
 ### Shared SPI Bus (CRITICAL)
 The SD card and LCD share **the same SPI bus (spi1)** with CLK/MOSI/MISO on GPIO 10/11/12. They use different CS pins (LCD CS=9, SD CS=22). If display CS is LOW while the SD card is accessed, the display receives SD card SPI traffic as pixel data, corrupting the write pointer.
@@ -126,28 +126,27 @@ The SD card driver switches to `CLK_SLOW` (100 kHz) for init then `CLK_FAST` (30
 ## Build
 ```bash
 mkdir software/infones/build && cd software/infones/build
-cmake ..
+cmake .. -DPICO_BOARD=pico2              # RP2350 (default)
+# cmake .. -DPICO_BOARD=pico            # RP2040
 make
-# Flash infoNES.uf2 to the RP2350
+# Flash infoNES.uf2 to the board
 # Load ROM via picotool:
 picotool load path/to/game.nes -t bin -o 0x10080000
 ```
 
+`CPU_FREQ_KHZ` is set automatically from the cmake `PICO_RP2350` variable (300 MHz for RP2350, 252 MHz for RP2040) — it is not part of `HARDWARE_TARGET`.
+
 ## Hardware Target Selection (CMakeLists.txt)
 
-Set `HARDWARE_TARGET` in `CMakeLists.txt` (or pass `-DHARDWARE_TARGET=...` to cmake). **Delete the build folder before switching targets.**
+Set `HARDWARE_TARGET` via `-DHARDWARE_TARGET=...` (or edit the default in CMakeLists.txt). **Delete the build folder before switching targets or boards.**
 
-```cmake
-set(HARDWARE_TARGET "PICO_RESTOUCH" ...)   # default — RP2350 + ST7789 320×240, shared SPI
-#set(HARDWARE_TARGET "ORIGINAL_RP2040" ...) # RP2040 + ILI9341 320×240, separate SPI buses
-#set(HARDWARE_TARGET "WAVESHARE_LCD13" ...) # RP2350 + ST7789 240×240, GPIO buttons+joystick
-```
+`HARDWARE_TARGET` describes peripheral wiring only (pins, display type, controller). Board/chip is selected separately via `-DPICO_BOARD`.
 
 ### Configuration comparison
 
 | Aspect | ORIGINAL_RP2040 | PICO_RESTOUCH | WAVESHARE_LCD13 |
 |---|---|---|---|
-| MCU | RP2040 | RP2350 | RP2350 |
+| Tested MCU | RP2040 | RP2350 | RP2350 |
 | LCD | ILI9341 320×240 | ST7789 320×240 | ST7789 240×240 |
 | LCD SPI / DC/CS/CLK/MOSI | spi0 / 20/17/18/19 | spi1 / 8/9/10/11 | spi1 / 8/9/10/11 |
 | LCD RST / BL | 21 / 22 | 15 / 13 | 12 / 13 |
@@ -155,7 +154,7 @@ set(HARDWARE_TARGET "PICO_RESTOUCH" ...)   # default — RP2350 + ST7789 320×24
 | SD CS | 13 | 22 | — |
 | Touch CS | none | GP16 | none |
 | Controller | none | NES Mini (i2c1, GP26/27) | GPIO buttons+joystick |
-| CPU clock | 252 MHz | 300 MHz | 300 MHz |
+| CPU clock | from chip (252/300 MHz) | from chip (252/300 MHz) | from chip (252/300 MHz) |
 | VREG | no | VREG_VOLTAGE_1_20 | VREG_VOLTAGE_1_20 |
 | `SHARED_SPI_BUS` | — | ✓ | — |
 | NES scanlines rendered | 4–235 (232 rows) | 4–235 (232 rows) | 0–239 (240 rows) |
@@ -193,7 +192,7 @@ Each target has its own `DISPLAY_ADDRESS_MODE` defined in `main.cpp`:
 | `HARDWARE_TARGET_<name>` | e.g. `HARDWARE_TARGET_PICO_RESTOUCH` |
 | `DISPLAY_WIDTH` / `DISPLAY_HEIGHT` | Display pixel dimensions |
 | `NES_FIRST_SCANLINE` / `NES_LAST_SCANLINE` | NES scanline render window |
-| `CPU_FREQ_KHZ` | System clock in kHz |
+| `CPU_FREQ_KHZ` | System clock in kHz — set from `PICO_RP2350` cmake variable, not from `HARDWARE_TARGET` |
 | `SHARED_SPI_BUS` | LCD and SD share a bus — enables shared-bus workarounds |
 | `OVERCLOCK_VREG` | Enable `vreg_set_voltage(VREG_VOLTAGE_1_20)` before clock boost |
 | `CONTROLLER_NUNCHUCK` | I2C NES Mini Classic input |
