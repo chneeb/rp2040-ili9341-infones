@@ -101,6 +101,15 @@ static void FCLK_FAST(void)
 #endif
 }
 
+/* On shared-bus targets the SPI is left at display speed between SD operations.
+ * Restore it to display speed after each SD access so DMA-driven display works. */
+static void FCLK_DISPLAY(void)
+{
+#if defined(SHARED_SPI_BUS) && defined(DISPLAY_SPI_CLOCK_SPEED_HZ) && !defined(SDCARD_PIO)
+    spi_set_baudrate(SDCARD_SPI_BUS, DISPLAY_SPI_CLOCK_SPEED_HZ);
+#endif
+}
+
 static void CS_HIGH(void)
 {
     cs_deselect(SDCARD_PIN_SPI0_CS);
@@ -338,18 +347,25 @@ DSTATUS disk_initialize (
 
 	if (drv) return STA_NOINIT;			/* Supports only drive 0 */
 	init_spi();							/* Initialize SPI */
-    sleep_ms(100); /* Give card time to stabilize after SPI peripheral reset */
+    sleep_ms(250); /* Give card time to stabilize after SPI peripheral reset */
 
 	if (Stat & STA_NODISK) return Stat;	/* Is card existing in the soket? */
 
 	FCLK_SLOW();
 	/* Send dummy clocks with CS=HIGH so the card enters/resets to SPI mode.
-	 * The spec requires 74+ clocks; send 160 (20 bytes) to give more margin
+	 * The spec requires 74+ clocks; send 320 (40 bytes) to give extra margin
 	 * and help flush any mid-response state left by a watchdog reboot. */
-	for (n = 20; n; n--) xchg_spi(0xFF);	/* Send 160 dummy clocks (CS=HIGH) */
+	for (n = 40; n; n--) xchg_spi(0xFF);	/* Send 320 dummy clocks (CS=HIGH) */
 
 	ty = 0;
-	if (send_cmd(CMD0, 0) == 1) {			/* Put the card SPI/Idle state */
+	/* CMD0 may need multiple attempts to transition the card from native to SPI
+	 * mode. Retry with extra clocks between attempts (up to ~1 second total). */
+	BYTE cmd0_res = 0xFF;
+	for (int cmd0_tries = 10; cmd0_tries && cmd0_res != 1; cmd0_tries--) {
+		for (n = 10; n; n--) xchg_spi(0xFF); /* extra clocks */
+		cmd0_res = send_cmd(CMD0, 0);
+	}
+	if (cmd0_res == 1) {			/* Put the card SPI/Idle state */
 		t = _millis();
 		if (send_cmd(CMD8, 0x1AA) == 1) {	/* SDv2? */
 			for (n = 0; n < 4; n++) ocr[n] = xchg_spi(0xFF);	/* Get 32 bit return value of R7 resp */
@@ -415,6 +431,7 @@ DRESULT disk_read (
 	if (drv || !count) return RES_PARERR;		/* Check parameter */
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check if drive is ready */
 
+	FCLK_FAST();	/* Ensure correct SD card clock speed */
 	if (!(CardType & CT_BLOCK)) sector *= 512;	/* LBA ot BA conversion (byte addressing cards) */
 
 	if (count == 1) {	/* Single sector read */
@@ -433,6 +450,7 @@ DRESULT disk_read (
 		}
 	}
 	deselect();
+	FCLK_DISPLAY();	/* Restore display clock speed on shared-bus targets */
 
 	return count ? RES_ERROR : RES_OK;	/* Return result */
 }
@@ -502,9 +520,10 @@ DRESULT disk_write (
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check drive status */
 	if (Stat & STA_PROTECT) return RES_WRPRT;	/* Check write protect */
 
+	FCLK_FAST();	/* Ensure correct SD card clock speed */
 	if (!(CardType & CT_BLOCK)) sector *= 512;	/* LBA ==> BA conversion (byte addressing cards) */
 
-	if (!_select()) return RES_NOTRDY;
+	if (!_select()) { FCLK_DISPLAY(); return RES_NOTRDY; }
 
 	if (count == 1) {	/* Single sector write */
 		if ((send_cmd(CMD24, sector) == 0)	/* WRITE_BLOCK */
@@ -523,6 +542,7 @@ DRESULT disk_write (
 		}
 	}
 	deselect();
+	FCLK_DISPLAY();	/* Restore display clock speed on shared-bus targets */
 
 	return count ? RES_ERROR : RES_OK;	/* Return result */
 }
@@ -547,6 +567,7 @@ DRESULT disk_ioctl (
 	if (drv) return RES_PARERR;					/* Check parameter */
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check if drive is ready */
 
+	FCLK_FAST();	/* Ensure correct SD card clock speed */
 	res = RES_ERROR;
 
 	switch (cmd) {
@@ -608,6 +629,7 @@ DRESULT disk_ioctl (
 	}
 
 	deselect();
+	FCLK_DISPLAY();	/* Restore display clock speed on shared-bus targets */
 
 	return res;
 }

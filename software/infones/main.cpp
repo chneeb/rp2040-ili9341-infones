@@ -65,13 +65,7 @@
 #define DCS_ADDRESS_MODE_RGB           0x00
 #define DCS_ADDRESS_MODE_FLIP_X        0x02
 
-#ifdef ILI9341
-#define    DISPLAY_SPI_CLOCK_SPEED_HZ 63000000
-#endif
-
-#ifdef ST7789
-#define    DISPLAY_SPI_CLOCK_SPEED_HZ 80000000
-#endif
+/* DISPLAY_SPI_CLOCK_SPEED_HZ is defined via CMakeLists.txt */
 
 #define    DISPLAY_PIXEL_FORMAT DCS_PIXEL_FORMAT_16BIT
 
@@ -1612,7 +1606,11 @@ int main()
 
     // InfoNES_Main();
 
-    isFatalError = true; // initSDCard() bypassed — using single flash ROM
+#if SDCARD_PIN_SPI0_CS >= 0
+    isFatalError = !initSDCard();
+#else
+    isFatalError = true; // no SD card on this target
+#endif
     // When a game is started from the menu, the menu will reboot the device.
     // After reboot the emulator will start the selected game.
     if (watchdog_caused_reboot() && isFatalError == false)

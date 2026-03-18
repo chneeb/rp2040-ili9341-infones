@@ -169,9 +169,11 @@ target_compile_definitions(infoNES PRIVATE
 
 if(LCD_CONTROLLER STREQUAL "ILI9341")
     add_compile_definitions(ILI9341)
+    add_compile_definitions(DISPLAY_SPI_CLOCK_SPEED_HZ=63000000)
 elseif(LCD_CONTROLLER STREQUAL "ST7789")
     add_compile_definitions(ST7789)
     add_compile_definitions(DISPLAY_INVERT)
+    add_compile_definitions(DISPLAY_SPI_CLOCK_SPEED_HZ=80000000)
 endif()
 
 if(HARDWARE_TARGET STREQUAL "PICO_RESTOUCH")

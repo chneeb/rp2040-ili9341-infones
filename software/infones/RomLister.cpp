@@ -58,9 +58,11 @@ namespace Frens
 		}
 		printf("Listing %s\n", ".");
 
-		f_opendir(&dir, ".");
+		FRESULT fod = f_opendir(&dir, ".");
+		printf("f_opendir result: %d\n", fod);
 		while (f_readdir(&dir, &file) == FR_OK && file.fname[0] && numberOfEntries < max_entries)
 		{
+			printf("  found: '%s' dir=%d\n", file.fname, (file.fattrib & AM_DIR) ? 1 : 0);
 			if (strlen(file.fname) < ROMLISTER_MAXPATH && file.fname[0] != '.')
 			{
 				struct RomEntry romInfo;
@@ -83,6 +85,7 @@ namespace Frens
 				}
 			}
 		}
+		printf("Total entries: %d\n", numberOfEntries);
 		f_closedir(&dir);
 		// (bubble) Sort
 		if (numberOfEntries > 1)

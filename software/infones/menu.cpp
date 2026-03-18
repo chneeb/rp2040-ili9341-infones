@@ -12,6 +12,8 @@
 // #include <util/exclusive_proc.h>
 // #include <gamepad.h>
 #include "hardware/watchdog.h"
+#include "hardware/i2c.h"
+#include "hardware/spi.h"
 #include "InfoNES.h"
 #include "RomLister.h"
 #include "menu.h"
@@ -19,6 +21,18 @@
 // #include "wiipad.h"
 
 #include "font_8x8.h"
+
+#ifdef SHARED_SPI_BUS
+/* Display DMA leaves CS LOW after each DrawScreen call. Any SD card access
+ * while CS is LOW sends SD traffic to the display as pixel data (moiré).
+ * Call before every SD access in the menu. */
+static inline void display_deselect_for_sd() {
+    while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
+    gpio_put(DISPLAY_PIN_CS, 1);
+}
+#else
+static inline void display_deselect_for_sd() {}
+#endif
 #define FONT_CHAR_WIDTH 8
 #define FONT_CHAR_HEIGHT 8
 #define FONT_N_CHARS 95
@@ -50,8 +64,8 @@ static int bgcolor = DEFAULT_BGCOLOR;
 
 struct charCell
 {
-    uint8_t fgcolor : 4;
-    uint8_t bgcolor : 4;
+    uint8_t fgcolor;
+    uint8_t bgcolor;
     char charvalue;
 };
 
@@ -97,33 +111,47 @@ void RomSelect_PadState(DWORD *pdwPad1, bool ignorepushed = false)
 {
 
     static DWORD prevButtons{};
-    // auto &gp = io::getCurrentGamePadState(0);
-
-    // int v = (gp.buttons & io::GamePadState::Button::LEFT ? LEFT : 0) |
-    //         (gp.buttons & io::GamePadState::Button::RIGHT ? RIGHT : 0) |
-    //         (gp.buttons & io::GamePadState::Button::UP ? UP : 0) |
-    //         (gp.buttons & io::GamePadState::Button::DOWN ? DOWN : 0) |
-    //         (gp.buttons & io::GamePadState::Button::A ? A : 0) |
-    //         (gp.buttons & io::GamePadState::Button::B ? B : 0) |
-    //         (gp.buttons & io::GamePadState::Button::SELECT ? SELECT : 0) |
-    //         (gp.buttons & io::GamePadState::Button::START ? START : 0) |
-    //         (gp.buttons & io::GamePadState::Button::X ? X : 0) |
-    //         (gp.buttons & io::GamePadState::Button::Y ? Y : 0) |
-    //         0;
-    // v |= nespad_state;
     int v=0;
+
+#ifdef CONTROLLER_NUNCHUCK
+    /* NES Mini Classic clone — I2C already initialised by key_init() in main.cpp.
+     * Buttons are active low. Byte layout per CLAUDE.md. */
+    uint8_t nc[8] = {};
+    uint8_t reg = 0x00;
+    if (i2c_write_blocking(NUNCHUCK_I2C_BUS, 0x52, &reg, 1, false) >= 0) {
+        sleep_us(200);
+        if (i2c_read_blocking(NUNCHUCK_I2C_BUS, 0x52, nc, 8, false) == 8) {
+            uint8_t b6 = nc[6];
+            uint8_t b7 = nc[7];
+            if (!(b7 & 0x01)) v |= _UP;
+            if (!(b6 & 0x40)) v |= _DOWN;
+            if (!(b7 & 0x02)) v |= _LEFT;
+            if (!(b6 & 0x80)) v |= _RIGHT;
+            if (!(b7 & 0x10)) v |= _AA;
+            if (!(b7 & 0x40)) v |= _BB;
+            if (!(b6 & 0x10)) v |= _SELECT;
+            if (!(b6 & 0x04)) v |= _START;
+        }
+    }
+#elif defined(CONTROLLER_GPIO_BUTTONS)
+    if (gpio_get(BTN_A)==0)  v |= _AA;
+    if (gpio_get(BTN_B)==0)  v |= _BB;
+    if (gpio_get(BTN_Y)==0)  v |= _START;
+    if (gpio_get(BTN_X)==0)  v |= _SELECT;
+    if (gpio_get(JOY_LEFT)==0)  v |= _LEFT;
+    if (gpio_get(JOY_RIGHT)==0) v |= _RIGHT;
+    if (gpio_get(JOY_UP)==0)    v |= _UP;
+    if (gpio_get(JOY_DOWN)==0)  v |= _DOWN;
+#else
     if (gpio_get(A)==0)      v |= _AA;
     if (gpio_get(B)==0)      v |= _BB;
-    if (gpio_get(ST)==0)      v |= _START;
-    if (gpio_get(SL)==0)      v |= _SELECT;
-    if (gpio_get(LT)==0)      v |= _LEFT;
-    if (gpio_get(RT)==0)      v |= _RIGHT;
-    if (gpio_get(UP)==0)      v |= _UP;
-    if (gpio_get(DN)==0)      v |= _DOWN;
-
-// #if WII_PIN_SDA >= 0 and WII_PIN_SCL >= 0
-//     v |= wiipad_read();
-// #endif
+    if (gpio_get(ST)==0)     v |= _START;
+    if (gpio_get(SL)==0)     v |= _SELECT;
+    if (gpio_get(LT)==0)     v |= _LEFT;
+    if (gpio_get(RT)==0)     v |= _RIGHT;
+    if (gpio_get(UP)==0)     v |= _UP;
+    if (gpio_get(DN)==0)     v |= _DOWN;
+#endif
 
     *pdwPad1 = 0;
    
@@ -455,6 +483,7 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
         showSplash = false;
         showSplashScreen();
     }
+    display_deselect_for_sd();
     romlister.list("/");
     displayRoms(romlister, firstVisibleRowINDEX);
     while (1)
@@ -553,6 +582,7 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                 }
                 if (strcmp(currentDir, "/") != 0)
                 {
+                    display_deselect_for_sd();
                     romlister.list("..");
                     firstVisibleRowINDEX = 0;
                     selectedRow = STARTROW;
@@ -569,6 +599,7 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
 
                 if (entries[index].IsDirectory)
                 {
+                    display_deselect_for_sd();
                     romlister.list(selectedRomOrFolder);
                     firstVisibleRowINDEX = 0;
                     selectedRow = STARTROW;
@@ -579,6 +610,7 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                     // https://kevinboone.me/picoflash.html?i=1
                     // https://www.makermatrix.com/blog/read-and-write-data-with-the-pi-pico-onboard-flash/
                     multicore_reset_core1(); // Stop Core 1 (Audio) safely before erasing/writing flash
+                    display_deselect_for_sd();
                     printf("Start saving rom to flash memory\n");
                     // exclProc_.setProcAndWait(
                     //     []
