@@ -4,8 +4,11 @@
 RP2350-based handheld NES emulator using InfoNES, driving an ST7789 (or ILI9341) LCD via overclocked SPI. Despite the repo name referencing RP2040/ILI9341, the actual hardware is an RP2350 with an ST7789 display.
 
 ## Key Files
-- `software/infones/main.cpp` — main application: display init, DMA rendering loop, InfoNES callbacks, controller input
+- `software/infones/main.cpp` — main application: display init, DMA rendering loop, InfoNES callbacks, controller input, SD card init, ROM loading
 - `software/infones/CMakeLists.txt` — build config; selects LCD controller, defines all pin assignments
+- `software/infones/menu.cpp` / `menu.h` / `rom_selector.h` — SD card file browser menu; `menu()` never returns, reboots via watchdog on game selection; writes chosen path to `/currentloadedrom.txt`
+- `software/infones/RomLister.cpp` / `RomLister.h` — enumerates `.nes` files on SD card for menu display
+- `software/infones/FrensHelpers.cpp` — shared helper utilities
 - `software/infones/drivers/sdcard/sdcard.c` — SD card driver (shared SPI bus handling)
 
 ## Hardware Configuration (Current)
@@ -81,10 +84,20 @@ Button mapping — active low, bytes 6 and 7:
 - No display frame skipping is currently active (all frames DMA'd to display)
 - The 60 fps cap + 80 MHz SPI + 300 MHz RP2350 achieves correct NES game speed; RP2040 at 252 MHz is sufficient but closer to the margin
 
+### ROM Loading Flow
+1. At startup, `initSDCard()` is called if `SDCARD_PIN_SPI0_CS >= 0` (i.e., on targets with an SD slot). `isFatalError` is set to `!initSDCard()`.
+2. On WAVESHARE_LCD13 (no SD slot), `isFatalError = true` always — the flash ROM at `NES_FILE_ADDR` is used directly.
+3. If `watchdog_caused_reboot() && !isFatalError`: read `/currentloadedrom.txt` from SD card for the ROM path and start the emulator immediately.
+4. Otherwise: show the file-browser menu (`menu()`). If `isFatalError` (no SD card), the menu falls through to run the flash ROM.
+5. `menu()` never returns — when a game is selected it writes the path to `/currentloadedrom.txt` and calls `watchdog_reboot()`.
+6. After `InfoNES_Main()` exits (player quit), `selectedRom` is cleared and the menu is shown again.
+
 ### Shared SPI Bus (CRITICAL)
 The SD card and LCD share **the same SPI bus (spi1)** with CLK/MOSI/MISO on GPIO 10/11/12. They use different CS pins (LCD CS=9, SD CS=22). If display CS is LOW while the SD card is accessed, the display receives SD card SPI traffic as pixel data, corrupting the write pointer.
 
 **SD CS early init**: GPIO 22 is driven HIGH in `main()` before `display_init()` to prevent the SD card (which retains SPI mode across watchdog reboots) from receiving display init traffic on the shared bus.
+
+**Menu SD access**: `menu.cpp` calls `display_deselect_for_sd()` (drives LCD CS HIGH, waits for SPI idle) before every SD card access on `SHARED_SPI_BUS` targets. DMA scanline rendering leaves LCD CS LOW after each frame, so this guard is required to avoid corrupting the display write pointer.
 
 ### SPI Baudrate After SD Card Access
 The SD card driver switches to `CLK_SLOW` (100 kHz) for init then `CLK_FAST` (30 MHz) for data. After `initSDCard()` returns (all code paths), the SPI baudrate is restored to `DISPLAY_SPI_CLOCK_SPEED_HZ`.
@@ -120,9 +133,6 @@ The SD card driver switches to `CLK_SLOW` (100 kHz) for init then `CLK_FAST` (30
 
 **Fix:** Buffers are now sized via `SCANLINE_BUF_WORDS` = `max(DISPLAY_WIDTH, 256)`, resolving to 320 for 320-wide targets and 256 for 240-wide targets (where the crop path never writes past index 239).
 
-### SD Card Init Bypassed
-`initSDCard()` is never called in `main()`. `isFatalError = true` is set unconditionally, so the watchdog-reboot SD ROM loading path is permanently skipped. The device uses a single ROM flashed directly to flash at `0x10080000`. The SD card hardware fixes (CS/MISO) are in place but untested.
-
 ## Build
 ```bash
 mkdir software/infones/build && cd software/infones/build
@@ -130,7 +140,12 @@ cmake .. -DPICO_BOARD=pico2              # RP2350 (default)
 # cmake .. -DPICO_BOARD=pico            # RP2040
 make
 # Flash infoNES.uf2 to the board
-# Load ROM via picotool:
+```
+
+**ROM loading (PICO_RESTOUCH / ORIGINAL_RP2040):** Copy `.nes` files to an SD card (FAT32). On first boot the file-browser menu appears; select a game to play. The selection is saved to `/currentloadedrom.txt` and the device reboots into the emulator. The menu reappears after the game exits.
+
+**ROM loading (WAVESHARE_LCD13 / no SD card):** Flash a single ROM directly to flash with picotool:
+```bash
 picotool load path/to/game.nes -t bin -o 0x10080000
 ```
 
