@@ -138,3 +138,44 @@ picotool load path/to/game.nes -t bin -o 0x10080000
 set(LCD_CONTROLLER "ST7789" ...)     # use ST7789 (current default)
 ```
 After switching, clear the build folder before rebuilding.
+
+## Hardware Target Switching (Not Yet Implemented)
+
+There are two distinct hardware configurations. Currently only the LCD controller is switchable; everything else is hardcoded.
+
+### Configuration comparison
+
+| Aspect | Original (RP2040 + ILI9341) | Current (RP2350 + ST7789) |
+|---|---|---|
+| LCD SPI bus | spi0 | spi1 |
+| LCD DC/CS/CLK/MOSI/RST/BL | 20/17/18/19/21/22 | 8/9/10/11/15/13 |
+| SD SPI bus | spi1 (separate from LCD) | spi1 (shared with LCD) |
+| SD CS | 13 | 22 |
+| Touch CS | none | GP16 |
+| Controller I2C | none | i2c1 |
+| Controller SDA/SCL | — | 26/27 |
+| CPU clock | 252 MHz | 300 MHz |
+| VREG | not needed | VREG_VOLTAGE_1_20 |
+| DISPLAY_INVERT | no | yes |
+
+The fundamental topology difference: the original has LCD and SD on **separate SPI buses** (spi0 / spi1), so all shared-bus workarounds (SD CS early HIGH, Touch CS HIGH, SPI baudrate restore, per-frame write pointer reset) are unnecessary for the original.
+
+### Required changes to make targets switchable
+
+**CMakeLists.txt** — replace the separate `LCD_CONTROLLER` + hardcoded pin variables with a single `HARDWARE_TARGET` variable (e.g. `PICO_RESTOUCH` / `ORIGINAL_RP2040`) that block-assigns everything in one `if/elseif`. Add these as new compile definitions:
+- `CPU_FREQ_KHZ` — currently hardcoded in `main.cpp:224`
+- `NUNCHUCK_I2C_BUS`, `NUNCHUCK_SDA`, `NUNCHUCK_SCL` — currently hardcoded in `main.cpp:99–101`
+- `SHARED_SPI_BUS` — set only for targets where LCD and SD share a bus; gates shared-bus logic in `main.cpp`
+- `TOUCH_PIN_CS` already exists; set to `-1` (or omit) for targets with no touch controller
+
+**main.cpp** — three hardcoded values become defines:
+- `main.cpp:224` — `CPUFreqKHz = 300000` → use `CPU_FREQ_KHZ`
+- `main.cpp:99–101` — `#define NUNCHUCK_I2C i2c1` / `SDA 26` / `SCL 27` → use CMake-supplied defines
+- `main.cpp:1493` — `vreg_set_voltage()` call → wrap in `#ifdef OVERCLOCK_VREG` (not needed for RP2040 @ 252 MHz)
+
+**main.cpp** — conditionalize shared-bus startup blocks with `#ifdef SHARED_SPI_BUS`:
+- Drive SD CS HIGH before `display_init()`
+- Drive Touch CS HIGH (or use `#if TOUCH_PIN_CS >= 0` sentinel)
+- SPI baudrate restore after `initSDCard()`
+
+**sdcard.c** — no changes needed; already correct for both topologies given the right CMake pin/bus values.
