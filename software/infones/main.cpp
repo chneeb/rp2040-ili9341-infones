@@ -82,12 +82,23 @@
 #define    DISPLAY_ADDRESS_MODE DCS_ADDRESS_MODE_RGB | DCS_ADDRESS_MODE_SWAP_XY | DCS_ADDRESS_MODE_MIRROR_Y
 #endif
 
+#ifdef HARDWARE_TARGET_WAVESHARE_LCD13
+/* Waveshare Pico LCD 1.3" (ST7789 240x240) corrections:
+ *   DISPLAY_ADDRESS_MODE: MX|MV (0x60) — 90° rotation with horizontal mirror for correct
+ *                         landscape orientation and image direction.
+ *   No GRAM offset needed: with MX+MV the MX mirror compensates for the 80-row portrait offset,
+ *                          so CASET 0-239 and RASET 0-239 map directly to the full visible area. */
+#undef  DISPLAY_ADDRESS_MODE
+#define DISPLAY_ADDRESS_MODE DCS_ADDRESS_MODE_MIRROR_X | DCS_ADDRESS_MODE_SWAP_XY
 #define    DISPLAY_OFFSET_X 0
 #define    DISPLAY_OFFSET_Y 0
+#else
+#define    DISPLAY_OFFSET_X 0
+#define    DISPLAY_OFFSET_Y 0
+#endif
 
 
-#define    DISPLAY_WIDTH 320
-#define    DISPLAY_HEIGHT 240
+// DISPLAY_WIDTH and DISPLAY_HEIGHT are provided by CMake via the HARDWARE_TARGET selection.
 
 
 //#undef    DISPLAY_INVERT 
@@ -96,20 +107,32 @@
 #include "audio.h"
 
 
-#define NUNCHUCK_I2C  i2c1
-#define NUNCHUCK_SDA  26
-#define NUNCHUCK_SCL  27
+// Controller pins and type are provided by CMake via HARDWARE_TARGET selection.
+// CONTROLLER_NUNCHUCK  → NES Mini Classic clone over I2C (PICO_RESTOUCH)
+// CONTROLLER_GPIO_BUTTONS → 4 buttons + joystick on GPIO (WAVESHARE_LCD13)
+// (no define)          → no controller (ORIGINAL_RP2040)
 #define NUNCHUCK_ADDR 0x52
 
+#ifdef CONTROLLER_NUNCHUCK
 static void nunchuck_init();
 static bool nunchuck_read(uint8_t data[8]);
+#endif
 
 const uint LED_PIN = PICO_DEFAULT_LED_PIN;
 
 // static hagl_backend_t *display;
-WORD scanline_buf_internal_1[320];
-WORD scanline_buf_internal_2[320];
-WORD scanline_buf_outgoing[320];
+// InfoNES always renders 256px wide.  For 320-wide targets the scaling loop writes
+// fb[0..319] in-place, so the buffer must be sized to DISPLAY_WIDTH (not just 256).
+// For 240-wide targets the crop loop only reads fb[8..247] and writes fb[0..239],
+// so 256 elements is sufficient there.
+#if DISPLAY_WIDTH > 256
+#define SCANLINE_BUF_WORDS DISPLAY_WIDTH
+#else
+#define SCANLINE_BUF_WORDS 256
+#endif
+WORD scanline_buf_internal_1[SCANLINE_BUF_WORDS];
+WORD scanline_buf_internal_2[SCANLINE_BUF_WORDS];
+WORD scanline_buf_outgoing[SCANLINE_BUF_WORDS];
 // BYTE framebuffer[256*240];
 // uint8_t screen_x;
 // uint8_t screen_x_start;
@@ -221,7 +244,7 @@ static FATFS fs;
 char *romName;
 namespace
 {
-    constexpr uint32_t CPUFreqKHz = 300000;
+    constexpr uint32_t CPUFreqKHz = CPU_FREQ_KHZ;
 
 //    constexpr dvi::Config dviConfig_PicoDVI = {
 //        .pinTMDS = {10, 12, 14},
@@ -475,12 +498,14 @@ void InfoNES_PadState(DWORD *pdwPad1, DWORD *pdwPad2, DWORD *pdwSystem)
 
     ++rapidFireCounter;
     bool reset = false;
-    
+
+#ifdef CONTROLLER_NUNCHUCK
     uint8_t nc[8];
     bool nc_ok = nunchuck_read(nc);
     // Buttons are active low in bytes 6 and 7
     uint8_t b6 = nc_ok ? nc[6] : 0xFF;
     uint8_t b7 = nc_ok ? nc[7] : 0xFF;
+#endif
 
     for (int i = 0; i < 2; ++i){
 
@@ -490,6 +515,7 @@ void InfoNES_PadState(DWORD *pdwPad1, DWORD *pdwPad2, DWORD *pdwSystem)
         continue;
     }
     int v=0;
+#ifdef CONTROLLER_NUNCHUCK
     if (!(b7 & 0x01)) v |= _UP;
     if (!(b6 & 0x40)) v |= _DOWN;
     if (!(b7 & 0x02)) v |= _LEFT;
@@ -498,6 +524,18 @@ void InfoNES_PadState(DWORD *pdwPad1, DWORD *pdwPad2, DWORD *pdwSystem)
     if (!(b7 & 0x40)) v |= _BB;
     if (!(b6 & 0x10)) v |= _SELECT;
     if (!(b6 & 0x04)) v |= _START;
+#elif defined(CONTROLLER_GPIO_BUTTONS)
+    // Waveshare Pico LCD 1.3" — all active low, pull-ups enabled in key_init()
+    if (!gpio_get(JOY_UP))    v |= _UP;
+    if (!gpio_get(JOY_DOWN))  v |= _DOWN;
+    if (!gpio_get(JOY_LEFT))  v |= _LEFT;
+    if (!gpio_get(JOY_RIGHT)) v |= _RIGHT;
+    if (!gpio_get(BTN_A))     v |= _AA;
+    if (!gpio_get(BTN_B))     v |= _BB;
+    if (!gpio_get(BTN_X))     v |= _SELECT;
+    if (!gpio_get(BTN_Y))     v |= _START;
+    // Joystick center (JOY_CTR) resets the emulator when held with Start
+#endif
 
     int rv = v;
         if (rapidFireCounter % 8 == 0)
@@ -768,28 +806,13 @@ static void display_write_data(const uint8_t *data, size_t length)
  */
 void ili9341_infones_frame_timing_register_init()
 {
-        uint8_t command;
-        uint8_t data[4];
-        int x=0;
-
-
-
-#if 0
-        display_set_address(x+((320-256)/2), 4, (x+((320-256)/2)+FRAME_COLUMN_WIDTH-1), (240-4-1));
-#endif
-        display_set_address(x+((320-256)/2), 4, (x+((320-256)/2)+256-1), (240-4-1));
-
+    display_set_address(0, NES_FIRST_SCANLINE, DISPLAY_WIDTH - 1, NES_LAST_SCANLINE);
+    /* CS stays HIGH — will be driven low at the start of the first rendered scanline */
 }
 void st7789_infones_frame_timing_register_init()
 {
-        uint8_t command;
-        uint8_t data[4];
-        int x=0;
-
-
-
-        display_set_address(x+((320-256)/2), 4, (x+((320-256)/2)+256-1), (240-4-1));
-        /* CS stays HIGH — will be driven low at the start of the first rendered scanline */
+    display_set_address(0, NES_FIRST_SCANLINE, DISPLAY_WIDTH - 1, NES_LAST_SCANLINE);
+    /* CS stays HIGH — will be driven low at the start of the first rendered scanline */
 }
 
 
@@ -1142,64 +1165,27 @@ void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
     }else{
         fb = scanline_buf_internal_2;
     }        
-#ifdef ILI9341
-                dma_channel_wait_for_finish_blocking(display_dma_channel);
-                if (line == 0) {
-                    while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
-                    display_set_address(0, 4, 319, 235);
-                    gpio_put(DISPLAY_PIN_DC, 1);
-                    gpio_put(DISPLAY_PIN_CS, 0);
-                }
-                for (int i = 319; i >= 0; i--) fb[i] = fb[i * 256 / 320];
-                dma_channel_set_trans_count(display_dma_channel, 320*2, false);
-                dma_channel_set_read_addr(display_dma_channel, fb, true);
-                // dma_channel_wait_for_finish_blocking(display_dma_channel);             
-// static uint32_t frame_counter=0;
-//         if(screen_y == 4){
-//             display_set_address(0+((320-256)/2), 4, (0+((320-256)/2)+256-1), (120+4-1));
-//             gpio_put(DISPLAY_PIN_DC, 1);
-//             gpio_put(DISPLAY_PIN_CS, 0);
-//         }
-//         if(screen_y == 120+4){
-//             display_set_address(0+((320-256)/2), 120+4, (0+((320-256)/2)+256-1), (240-4-1));
-//             gpio_put(DISPLAY_PIN_DC, 1);
-//             gpio_put(DISPLAY_PIN_CS, 0);
-//         }
-//         if(screen_y < (120+4) ){
-//             if(frame_counter % 2 == 0){
-//                 dma_channel_wait_for_finish_blocking(display_dma_channel);
-//                 dma_channel_set_trans_count(display_dma_channel, 256*2, false);
-//                 dma_channel_set_read_addr(display_dma_channel, (uint8_t *)scanline_buf_internal, true);   
-//                 dma_channel_wait_for_finish_blocking(display_dma_channel);             
-//             }
-//         }
-//         else{
-//             if(frame_counter % 2 == 1){
-//                 dma_channel_wait_for_finish_blocking(display_dma_channel);
-//                 dma_channel_set_trans_count(display_dma_channel, 256*2, false);
-//                 dma_channel_set_read_addr(display_dma_channel, (uint8_t *)scanline_buf_internal, true);   
-//                 dma_channel_wait_for_finish_blocking(display_dma_channel);    
-//             }         
-//         }
-//         if(screen_y == 240-4-1){
-//             frame_counter++;
-//         }
-#endif
-#ifdef ST7789
     dma_channel_wait_for_finish_blocking(display_dma_channel);
-    if (line == 4) {
-        /* First rendered scanline: drain SPI TX FIFO, then reset the write pointer
-         * to the start of the frame window. This corrects any corruption of the
-         * display write pointer caused by SD card SPI traffic on the shared bus. */
+    if (line == NES_FIRST_SCANLINE) {
+        /* First rendered scanline: drain SPI TX FIFO then drive CS low for the frame.
+         * On SHARED_SPI_BUS targets also re-issue display_set_address to correct any
+         * write-pointer corruption caused by SD card traffic on the shared bus. */
         while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
-        display_set_address(0, 4, 319, 235);
+#ifdef SHARED_SPI_BUS
+        display_set_address(0, NES_FIRST_SCANLINE, DISPLAY_WIDTH - 1, NES_LAST_SCANLINE);
+#endif
         gpio_put(DISPLAY_PIN_DC, 1);
         gpio_put(DISPLAY_PIN_CS, 0);
     }
+#if DISPLAY_WIDTH == 320
+    /* Scale NES 256px wide → 320px wide (nearest-neighbour, right-to-left in-place). */
     for (int i = 319; i >= 0; i--) fb[i] = fb[i * 256 / 320];
-    dma_channel_set_trans_count(display_dma_channel, 320*2, false);
-    dma_channel_set_read_addr(display_dma_channel, fb, true);
+#else
+    /* Crop NES 256px wide → 240px wide: drop 8px overscan on each side. */
+    for (int i = 0; i < 240; i++) fb[i] = fb[i + 8];
 #endif
+    dma_channel_set_trans_count(display_dma_channel, DISPLAY_WIDTH * 2, false);
+    dma_channel_set_read_addr(display_dma_channel, fb, true);
                 /* Set CS high to ignore any traffic on SPI bus. */
                 // gpio_put(DISPLAY_PIN_CS, 1);
 
@@ -1244,35 +1230,48 @@ int InfoNES_Menu()
 
 
 
+#ifdef CONTROLLER_NUNCHUCK
 static void nunchuck_init() {
-    i2c_init(NUNCHUCK_I2C, 400 * 1000);
+    i2c_init(NUNCHUCK_I2C_BUS, 400 * 1000);
     gpio_set_function(NUNCHUCK_SDA, GPIO_FUNC_I2C);
     gpio_set_function(NUNCHUCK_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(NUNCHUCK_SDA);
     gpio_pull_up(NUNCHUCK_SCL);
     uint8_t init1[] = {0xF0, 0x55};
-    i2c_write_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, init1, 2, false);
+    i2c_write_blocking(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, init1, 2, false);
     sleep_ms(1);
     uint8_t init2[] = {0xFB, 0x00};
-    i2c_write_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, init2, 2, false);
+    i2c_write_blocking(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, init2, 2, false);
     sleep_ms(1);
     uint8_t init3[] = {0xFE, 0x03};
-    i2c_write_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, init3, 2, false);
+    i2c_write_blocking(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, init3, 2, false);
     sleep_ms(1);
 }
 
 static bool nunchuck_read(uint8_t data[8]) {
     uint8_t reg = 0x00;
-    if (i2c_write_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, &reg, 1, false) < 0)
+    if (i2c_write_blocking(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, &reg, 1, false) < 0)
         return false;
     sleep_us(200);
-    return i2c_read_blocking(NUNCHUCK_I2C, NUNCHUCK_ADDR, data, 8, false) == 8;
+    return i2c_read_blocking(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, data, 8, false) == 8;
 }
+#endif /* CONTROLLER_NUNCHUCK */
 
 static void key_init() {
     gpio_init(25);
     gpio_set_dir(25, GPIO_OUT);
+#ifdef CONTROLLER_NUNCHUCK
     nunchuck_init();
+#elif defined(CONTROLLER_GPIO_BUTTONS)
+    /* Waveshare Pico LCD 1.3" — all buttons/joystick active low, enable internal pull-ups. */
+    const uint btn_pins[] = {BTN_A, BTN_B, BTN_X, BTN_Y,
+                              JOY_UP, JOY_DOWN, JOY_LEFT, JOY_RIGHT, JOY_CTR};
+    for (uint pin : btn_pins) {
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_IN);
+        gpio_pull_up(pin);
+    }
+#endif
 }
 
 
@@ -1398,22 +1397,11 @@ void display_init()
 }
 void display_clear()
 {
-#ifdef ILI9341
-    display_set_address(0,0,320-1,240-1);
-    BYTE pixel[2]={0x00,0x00};
-    for(int i=0;i<320*240;i+=1){
-        display_write_data(pixel,2);
+    display_set_address(0, 0, DISPLAY_WIDTH - 1, DISPLAY_HEIGHT - 1);
+    BYTE pixel[2] = {0x00, 0x00};
+    for (int i = 0; i < DISPLAY_WIDTH * DISPLAY_HEIGHT; i++) {
+        display_write_data(pixel, 2);
     }
-#endif
-#ifdef ST7789
-    display_set_address(0,0,320-1,240-1);
-    BYTE pixel[2]={0x00,0x00};
-    for(int i=0;i<320*240;i+=1){
-        display_write_data(pixel,2);
-    }
-#endif
-  
-
 }
 
 bool initSDCard()
@@ -1490,8 +1478,10 @@ int main()
     errMSG[0] = selectedRom[0] = 0;
     ErrorMessage = errMSG;
 
+#ifdef OVERCLOCK_VREG
     vreg_set_voltage(VREG_VOLTAGE_1_20);
     sleep_ms(100);
+#endif
     set_sys_clock_khz(CPUFreqKHz, true);
 
 
@@ -1502,18 +1492,21 @@ int main()
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 1);
 
-    /* Assert SD card CS and touch controller CS HIGH before display init.
-     * The SD card, LCD, and XPT2046 touch controller all share spi1.
-     * Any CS that floats low will cause that device to respond to SPI traffic
-     * and drive MISO low, blocking disk_initialize() wait_ready(). */
+#ifdef SHARED_SPI_BUS
+    /* On SHARED_SPI_BUS targets, SD card and touch controller share spi1 with the LCD.
+     * Drive their CS pins HIGH before display_init() so they ignore the LCD init traffic
+     * and do not hold MISO low (which would block SD card disk_initialize wait_ready). */
     gpio_init(SDCARD_PIN_SPI0_CS);
     gpio_set_dir(SDCARD_PIN_SPI0_CS, GPIO_OUT);
     gpio_put(SDCARD_PIN_SPI0_CS, 1);
 
+#if TOUCH_PIN_CS >= 0
     /* XPT2046 touch controller CS — must not float */
     gpio_init(TOUCH_PIN_CS);
     gpio_set_dir(TOUCH_PIN_CS, GPIO_OUT);
     gpio_put(TOUCH_PIN_CS, 1);
+#endif
+#endif /* SHARED_SPI_BUS */
 
     // display = hagl_init();
     // hagl_clear(display);

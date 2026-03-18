@@ -63,21 +63,18 @@ Button mapping — active low, bytes 6 and 7:
 ## Architecture
 
 ### Display Rendering
-- NES outputs 256×240 pixels; display is 320×240 (landscape via MADCTL MV=1, BGR=1)
-- Image is scaled 256→320 (nearest-neighbor, in-place right-to-left) and fills the full width; 4px border top/bottom
-- Window: columns 0–319, rows 4–235 (232 rows)
-- ST7789 DISPLAY_ADDRESS_MODE = `DCS_ADDRESS_MODE_BGR | DCS_ADDRESS_MODE_SWAP_XY | DCS_ADDRESS_MODE_MIRROR_Y` (0xA8)
-- ILI9341 DISPLAY_ADDRESS_MODE = `DCS_ADDRESS_MODE_BGR | DCS_ADDRESS_MODE_SWAP_XY` (0x28)
-- ST7789 uses `DISPLAY_INVERT` define (set in CMakeLists.txt)
+- NES native output: 256 pixels wide × 240 pixels tall
+- **320-wide targets** (ORIGINAL_RP2040, PICO_RESTOUCH): scale 256→320 nearest-neighbor in-place (right-to-left); 4px border top/bottom; window columns 0–319, rows 4–235 (232 rows)
+- **240-wide target** (WAVESHARE_LCD13): crop 256→240 (drop 8px overscan each side: `fb[i+8]`); full height; window columns 0–239, rows 0–239 (240 rows)
+- ST7789 uses `DISPLAY_INVERT` define (set in CMakeLists.txt for ST7789 targets)
 
 ### Scanline DMA Flow
-- Two ping-pong buffers: `scanline_buf_internal_1` / `scanline_buf_internal_2` (WORD[320])
-- InfoNES renders scanlines 4–235 only (232 scanlines), controlled by `PPU_Scanline >= 4 && PPU_Scanline < 236` in `InfoNES.cpp`
+- Two ping-pong buffers: `scanline_buf_internal_1` / `scanline_buf_internal_2` (WORD[**`SCANLINE_BUF_WORDS`**] — `DISPLAY_WIDTH` for 320-wide targets, 256 for 240-wide targets; must be at least `DISPLAY_WIDTH` because the 320-wide scaling loop writes `fb[0..319]` in-place)
+- InfoNES renders `NES_FIRST_SCANLINE`–`NES_LAST_SCANLINE` only, controlled in `InfoNES.cpp`
 - `InfoNES_PreDrawLine(line)` — sets InfoNES line buffer (buf1 for even, buf2 for odd lines)
-- `InfoNES_PostDrawLine(line)` — scales 256→320 in-place, waits for previous DMA, then starts DMA for current line
-- DMA: `DMA_SIZE_8`, 640 bytes per scanline (320 pixels × 2 bytes), DREQ-paced to SPI TX FIFO
-- 232 scanlines × 320 pixels = 74,240 pixels per frame
-- At 80 MHz SPI: ~14.8 ms per frame → ceiling of ~67 fps (sufficient for NES 60 fps)
+- `InfoNES_PostDrawLine(line)` — scales or crops in-place, waits for previous DMA, then starts DMA
+- DMA: `DMA_SIZE_8`, `DISPLAY_WIDTH * 2` bytes per scanline, DREQ-paced to SPI TX FIFO
+- At 80 MHz SPI, 320-wide: ~14.8 ms/frame → ceiling ~67 fps; 240-wide: ~11.5 ms/frame → ceiling ~87 fps (both sufficient for NES 60 fps)
 
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` caps at 60 fps (waits if frame finishes early)
@@ -116,8 +113,12 @@ The SD card driver switches to `CLK_SLOW` (100 kHz) for init then `CLK_FAST` (30
 
 **Fix:** `init_spi()` in `sdcard.c` calls `spi_init(SDCARD_SPI_BUS, CLK_SLOW)` (resets peripheral) but does NOT call `gpio_init()`/`gpio_set_function()` on the shared SCK/MOSI pins. It does call `gpio_set_function(SDCARD_PIN_SPI0_MISO, GPIO_FUNC_SPI)` + `gpio_pull_up()` for MISO (GPIO 12), which is safe because `display_init()` skips MISO when `LCD_MISO == -1`. After `spi_init()`, `disk_initialize()` sleeps 100 ms to let the card stabilize, then sends 160 dummy clocks (20 bytes, CS=HIGH) instead of the spec minimum 74 to flush any mid-response state from a watchdog reboot. `main()` drives SD CS (GP22) and touch CS (GP16) HIGH before `display_init()`.
 
-### Dead Code: ILI9341 per-frame reset (line == 0)
-The ILI9341 PostDrawLine has `if (line == 0)` but `line` is always 4–235, so this block never executes.
+### Scanline Buffer Overflow on 320-Wide Targets (CONFIRMED FIX)
+**Symptom:** Every odd scanline had its left ~80 columns showing content from the right edge of the preceding even scanline — visible as repeated/garbled image data on the right side of the screen.
+
+**Root cause:** Buffers were sized `[256]` (NES native width), but the 320-wide in-place scaling loop writes `fb[0..319]`. The overflow for even lines (buf1) spilled into `buf2[0..63]`, which InfoNES had just filled with the next odd line's pixel data. The odd line's scaling then read those corrupted bytes as source pixels for display columns 0–79, producing the wrong content.
+
+**Fix:** Buffers are now sized via `SCANLINE_BUF_WORDS` = `max(DISPLAY_WIDTH, 256)`, resolving to 320 for 320-wide targets and 256 for 240-wide targets (where the crop path never writes past index 239).
 
 ### SD Card Init Bypassed
 `initSDCard()` is never called in `main()`. `isFatalError = true` is set unconditionally, so the watchdog-reboot SD ROM loading path is permanently skipped. The device uses a single ROM flashed directly to flash at `0x10080000`. The SD card hardware fixes (CS/MISO) are in place but untested.
@@ -132,50 +133,70 @@ make
 picotool load path/to/game.nes -t bin -o 0x10080000
 ```
 
-## LCD Controller Selection (CMakeLists.txt)
+## Hardware Target Selection (CMakeLists.txt)
+
+Set `HARDWARE_TARGET` in `CMakeLists.txt` (or pass `-DHARDWARE_TARGET=...` to cmake). **Delete the build folder before switching targets.**
+
 ```cmake
-#set(LCD_CONTROLLER "ILI9341" ...)   # use ILI9341
-set(LCD_CONTROLLER "ST7789" ...)     # use ST7789 (current default)
+set(HARDWARE_TARGET "PICO_RESTOUCH" ...)   # default — RP2350 + ST7789 320×240, shared SPI
+#set(HARDWARE_TARGET "ORIGINAL_RP2040" ...) # RP2040 + ILI9341 320×240, separate SPI buses
+#set(HARDWARE_TARGET "WAVESHARE_LCD13" ...) # RP2350 + ST7789 240×240, GPIO buttons+joystick
 ```
-After switching, clear the build folder before rebuilding.
-
-## Hardware Target Switching (Not Yet Implemented)
-
-There are two distinct hardware configurations. Currently only the LCD controller is switchable; everything else is hardcoded.
 
 ### Configuration comparison
 
-| Aspect | Original (RP2040 + ILI9341) | Current (RP2350 + ST7789) |
+| Aspect | ORIGINAL_RP2040 | PICO_RESTOUCH | WAVESHARE_LCD13 |
+|---|---|---|---|
+| MCU | RP2040 | RP2350 | RP2350 |
+| LCD | ILI9341 320×240 | ST7789 320×240 | ST7789 240×240 |
+| LCD SPI / DC/CS/CLK/MOSI | spi0 / 20/17/18/19 | spi1 / 8/9/10/11 | spi1 / 8/9/10/11 |
+| LCD RST / BL | 21 / 22 | 15 / 13 | 12 / 13 |
+| SD SPI bus | spi1 (separate) | spi1 (shared) | none |
+| SD CS | 13 | 22 | — |
+| Touch CS | none | GP16 | none |
+| Controller | none | NES Mini (i2c1, GP26/27) | GPIO buttons+joystick |
+| CPU clock | 252 MHz | 300 MHz | 300 MHz |
+| VREG | no | VREG_VOLTAGE_1_20 | VREG_VOLTAGE_1_20 |
+| `SHARED_SPI_BUS` | — | ✓ | — |
+| NES scanlines rendered | 4–235 (232 rows) | 4–235 (232 rows) | 0–239 (240 rows) |
+
+### Waveshare Pico LCD 1.3" button mapping
+
+| NES button | Physical input |
+|---|---|
+| Up/Down/Left/Right | Joystick (GP2/18/16/20) |
+| A | Button A (GP15) |
+| B | Button B (GP17) |
+| Select | Button X (GP19) |
+| Start | Button Y (GP21) |
+
+Joystick center (GP3) is currently unused; extend `key_init()` / `InfoNES_PadState()` if needed.
+
+### Display orientation / DISPLAY_ADDRESS_MODE
+
+Each target has its own `DISPLAY_ADDRESS_MODE` defined in `main.cpp`:
+
+| Target | DISPLAY_ADDRESS_MODE | Value |
 |---|---|---|
-| LCD SPI bus | spi0 | spi1 |
-| LCD DC/CS/CLK/MOSI/RST/BL | 20/17/18/19/21/22 | 8/9/10/11/15/13 |
-| SD SPI bus | spi1 (separate from LCD) | spi1 (shared with LCD) |
-| SD CS | 13 | 22 |
-| Touch CS | none | GP16 |
-| Controller I2C | none | i2c1 |
-| Controller SDA/SCL | — | 26/27 |
-| CPU clock | 252 MHz | 300 MHz |
-| VREG | not needed | VREG_VOLTAGE_1_20 |
-| DISPLAY_INVERT | no | yes |
+| ORIGINAL_RP2040 (ILI9341) | `DCS_ADDRESS_MODE_BGR \| DCS_ADDRESS_MODE_SWAP_XY` | 0x28 |
+| PICO_RESTOUCH (ST7789 320×240) | `DCS_ADDRESS_MODE_RGB \| DCS_ADDRESS_MODE_SWAP_XY \| DCS_ADDRESS_MODE_MIRROR_Y` | 0xA0 |
+| WAVESHARE_LCD13 (ST7789 240×240) | `DCS_ADDRESS_MODE_MIRROR_X \| DCS_ADDRESS_MODE_SWAP_XY` | 0x60 |
 
-The fundamental topology difference: the original has LCD and SD on **separate SPI buses** (spi0 / spi1), so all shared-bus workarounds (SD CS early HIGH, Touch CS HIGH, SPI baudrate restore, per-frame write pointer reset) are unnecessary for the original.
+**WAVESHARE_LCD13 GRAM offset**: No offset needed (`DISPLAY_OFFSET_X=0`, `DISPLAY_OFFSET_Y=0`). The MX mirror in `0x60` compensates for the 80-row portrait-mode GRAM offset of the ST7789 240×240 panel, so `CASET(0, 239)` and `RASET(0, 239)` map directly to the full visible area.
 
-### Required changes to make targets switchable
+**PICO_RESTOUCH / ORIGINAL_RP2040**: also use `DISPLAY_OFFSET_X=0`, `DISPLAY_OFFSET_Y=0` — their panels expose the full address range without any offset.
 
-**CMakeLists.txt** — replace the separate `LCD_CONTROLLER` + hardcoded pin variables with a single `HARDWARE_TARGET` variable (e.g. `PICO_RESTOUCH` / `ORIGINAL_RP2040`) that block-assigns everything in one `if/elseif`. Add these as new compile definitions:
-- `CPU_FREQ_KHZ` — currently hardcoded in `main.cpp:224`
-- `NUNCHUCK_I2C_BUS`, `NUNCHUCK_SDA`, `NUNCHUCK_SCL` — currently hardcoded in `main.cpp:99–101`
-- `SHARED_SPI_BUS` — set only for targets where LCD and SD share a bus; gates shared-bus logic in `main.cpp`
-- `TOUCH_PIN_CS` already exists; set to `-1` (or omit) for targets with no touch controller
+### Key compile-time defines (set by CMakeLists.txt per target)
 
-**main.cpp** — three hardcoded values become defines:
-- `main.cpp:224` — `CPUFreqKHz = 300000` → use `CPU_FREQ_KHZ`
-- `main.cpp:99–101` — `#define NUNCHUCK_I2C i2c1` / `SDA 26` / `SCL 27` → use CMake-supplied defines
-- `main.cpp:1493` — `vreg_set_voltage()` call → wrap in `#ifdef OVERCLOCK_VREG` (not needed for RP2040 @ 252 MHz)
-
-**main.cpp** — conditionalize shared-bus startup blocks with `#ifdef SHARED_SPI_BUS`:
-- Drive SD CS HIGH before `display_init()`
-- Drive Touch CS HIGH (or use `#if TOUCH_PIN_CS >= 0` sentinel)
-- SPI baudrate restore after `initSDCard()`
-
-**sdcard.c** — no changes needed; already correct for both topologies given the right CMake pin/bus values.
+| Define | Purpose |
+|---|---|
+| `HARDWARE_TARGET_<name>` | e.g. `HARDWARE_TARGET_PICO_RESTOUCH` |
+| `DISPLAY_WIDTH` / `DISPLAY_HEIGHT` | Display pixel dimensions |
+| `NES_FIRST_SCANLINE` / `NES_LAST_SCANLINE` | NES scanline render window |
+| `CPU_FREQ_KHZ` | System clock in kHz |
+| `SHARED_SPI_BUS` | LCD and SD share a bus — enables shared-bus workarounds |
+| `OVERCLOCK_VREG` | Enable `vreg_set_voltage(VREG_VOLTAGE_1_20)` before clock boost |
+| `CONTROLLER_NUNCHUCK` | I2C NES Mini Classic input |
+| `CONTROLLER_GPIO_BUTTONS` | GPIO button+joystick input |
+| `NUNCHUCK_I2C_BUS` / `NUNCHUCK_SDA` / `NUNCHUCK_SCL` | Nunchuck I2C bus and pins |
+| `BTN_A/B/X/Y` / `JOY_UP/DOWN/LEFT/RIGHT/CTR` | Waveshare button/joystick GPIO pins |

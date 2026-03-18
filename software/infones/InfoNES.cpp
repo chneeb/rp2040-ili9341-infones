@@ -745,7 +745,7 @@ int __not_in_flash_func(InfoNES_HSync)()
   if (FrameCnt == 0 &&
       PPU_ScanTable[PPU_Scanline] == SCAN_ON_SCREEN)
   {
-    if (PPU_Scanline >= 4 && PPU_Scanline < 240 - 4)
+    if (PPU_Scanline >= NES_FIRST_SCANLINE && PPU_Scanline <= NES_LAST_SCANLINE)
     {
       InfoNES_PreDrawLine(PPU_Scanline);
       InfoNES_DrawLine();

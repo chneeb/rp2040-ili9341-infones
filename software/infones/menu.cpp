@@ -206,7 +206,7 @@ void RomSelect_DrawLine(int line, int selectedRow)
 void drawline(int scanline, int selectedRow)
 {
     RomSelect_PreDrawLine(scanline);
-    RomSelect_DrawLine(scanline - 4, selectedRow);
+    RomSelect_DrawLine(scanline - NES_FIRST_SCANLINE, selectedRow);
     InfoNES_PostDrawLine(scanline);
 }
 
@@ -234,7 +234,7 @@ static void putText(int x, int y, const char *text, int fgcolor, int bgcolor)
 
 void DrawScreen(int selectedRow)
 {
-    for (auto line = 4; line < 236; line++)
+    for (auto line = NES_FIRST_SCANLINE; line <= NES_LAST_SCANLINE; line++)
     {
         drawline(line, selectedRow);
     }
