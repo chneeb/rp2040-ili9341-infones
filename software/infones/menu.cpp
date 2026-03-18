@@ -450,6 +450,8 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
     int firstVisibleRowINDEX = 0;
     int selectedRow = STARTROW;
     char currentDir[FF_MAX_LFN];
+    char romDir[FF_MAX_LFN];
+    romDir[0] = '/'; romDir[1] = 0; /* default to root */
     int totalFrames = -1;
 
     globalErrorMessage = errorMessage;
@@ -485,6 +487,7 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
     }
     display_deselect_for_sd();
     romlister.list("/");
+    f_getcwd(romDir, sizeof(romDir));
     displayRoms(romlister, firstVisibleRowINDEX);
     while (1)
     {
@@ -584,6 +587,7 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                 {
                     display_deselect_for_sd();
                     romlister.list("..");
+                    f_getcwd(romDir, sizeof(romDir));
                     firstVisibleRowINDEX = 0;
                     selectedRow = STARTROW;
                     displayRoms(romlister, firstVisibleRowINDEX);
@@ -601,6 +605,7 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                 {
                     display_deselect_for_sd();
                     romlister.list(selectedRomOrFolder);
+                    f_getcwd(romDir, sizeof(romDir));
                     firstVisibleRowINDEX = 0;
                     selectedRow = STARTROW;
                     displayRoms(romlister, firstVisibleRowINDEX);
@@ -622,12 +627,12 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                             BYTE *buffer = (BYTE *)InfoNes_GetPPURAM(&bufsize);
 
                             auto ofs = FLASH_ADDRESS - XIP_BASE;
-                            // Re-apply the directory in case CWD drifted since listing
+                            // Restore the directory where the ROM was listed from
                             {
-                                char cwd[64];
+                                char cwd[FF_MAX_LFN];
                                 f_getcwd(cwd, sizeof(cwd));
-                                printf("cwd before open: '%s', file: '%s'\n", cwd, selectedRomOrFolder);
-                                f_chdir(romlister.FolderName());
+                                printf("cwd='%s' romDir='%s' file='%s'\n", cwd, romDir, selectedRomOrFolder);
+                                f_chdir(romDir);
                             }
                             printf("write %s rom to flash %x\n", selectedRomOrFolder, ofs);
                             fr = f_open(&fil, selectedRomOrFolder, FA_READ);
