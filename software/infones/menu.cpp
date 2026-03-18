@@ -622,6 +622,13 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                             BYTE *buffer = (BYTE *)InfoNes_GetPPURAM(&bufsize);
 
                             auto ofs = FLASH_ADDRESS - XIP_BASE;
+                            // Re-apply the directory in case CWD drifted since listing
+                            {
+                                char cwd[64];
+                                f_getcwd(cwd, sizeof(cwd));
+                                printf("cwd before open: '%s', file: '%s'\n", cwd, selectedRomOrFolder);
+                                f_chdir(romlister.FolderName());
+                            }
                             printf("write %s rom to flash %x\n", selectedRomOrFolder, ofs);
                             fr = f_open(&fil, selectedRomOrFolder, FA_READ);
 
