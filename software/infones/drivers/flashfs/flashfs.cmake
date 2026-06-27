@@ -1,0 +1,6 @@
+if (NOT TARGET flashfs)
+    add_library(flashfs INTERFACE)
+    target_sources(flashfs INTERFACE ${CMAKE_CURRENT_LIST_DIR}/flashfs.c)
+    target_include_directories(flashfs INTERFACE ${CMAKE_CURRENT_LIST_DIR})
+    target_link_libraries(flashfs INTERFACE fatfs pico_stdlib)
+endif()

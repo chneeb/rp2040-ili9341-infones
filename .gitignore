@@ -1,4 +1,7 @@
 software/infones/build/*
 software/infones/build-*/
 software/infones/pico.log
+# Image / archive artifacts produced by tools/mkromfs.sh and tools/mkromtar.sh
+software/infones/*.tar
+software/infones/*.img
 

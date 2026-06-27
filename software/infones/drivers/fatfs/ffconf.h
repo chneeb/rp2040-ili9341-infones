@@ -166,8 +166,11 @@
 / Drive/Volume Configurations
 /---------------------------------------------------------------------------*/
 
-#define FF_VOLUMES		1
-/* Number of volumes (logical drives) to be used. (1-10) */
+#define FF_VOLUMES		2
+/* Number of volumes (logical drives) to be used. (1-10)
+ * Drive 0: SD card (drivers/sdcard/sdcard.c).
+ * Drive 1: read-only flash-resident FAT32 image (drivers/flashfs/flashfs.c),
+ *          built only for targets that set FLASHFS_ENABLED. */
 
 
 #define FF_STR_VOLUME_ID	0

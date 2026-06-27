@@ -219,6 +219,59 @@ Both the LCD (via GP10/11) and the SD card (via GP30/31/40) live on the *same* S
 
 `sdcard.c`'s `init_spi()` calls `gpio_set_function(SCK/MOSI, GPIO_FUNC_SPI)` unconditionally. For PICO_RESTOUCH this is a harmless no-op (display init already set those same pins). For GAMEPI20 it's required because the LCD's SPI init configures GP10/11, not GP30/31.
 
+### No-SD-card ROM library: TAR in the single-ROM region (working)
+
+When no SD card is inserted, the firmware falls through to its "single-ROM" path: `RomSelector::init(NES_FILE_ADDR)` (rom_selector.h) inspects the bytes at `0x10080000`. If they start with `NES\x1A` it's treated as a raw `.nes` ROM; otherwise it's parsed as a **POSIX ustar archive** (`tar.cpp:parseTAR()`) and each `.nes` entry inside becomes a selectable ROM. The TAR header magic check is strict — `strcmp("ustar", header+257) == 0` — so the archive must be built with `tar --format=ustar` (GNU tar's default `--format=gnu` adds PaxHeader records that fail the check).
+
+Building and flashing a TAR of ROMs:
+
+```bash
+tools/mkromtar.sh ~/roms/nes/ roms.tar                 # ustar archive of *.nes (case-insens.)
+picotool load -F roms.tar -t bin -o 0x10080000 --family absolute
+picotool reboot
+```
+
+The script forces `--format=ustar`, verifies the magic at offset 257, copies only top-level `.nes` files (case-insensitive — `.NES`, `.Nes`, `.nes`), and warns if the archive exceeds the 1 MB region between `NES_FILE_ADDR` and the next reserved area at `0x10180000`. ~15–25 typical NES ROMs fit comfortably.
+
+**In-game ROM switching**: hold SELECT + tap LEFT to cycle to the previous ROM in the archive; SELECT + RIGHT for the next. `RomSelector::prev()`/`next()` (rom_selector.h) advance the in-archive index; the input handler in `main.cpp:InfoNES_PadState()` calls `saveNVRAM()` then sets `reset = true` so `InfoNES_Main()` exits cleanly; the outer loop re-runs it against the now-current ROM (via the `continue` in the fatal-error branch of `main()`). For single-ROM mode these calls are no-ops (`prev()`/`next()` early-return when `singleROM_` is set).
+
+### GAMEPI20 flash-resident FAT32 fallback (DISABLED — picotool flash issue unresolved)
+
+> Status: code in tree (`FLASHFS_ENABLED`-gated), default for GAMEPI20 enables it via `add_compile_definitions(FLASHFS_ENABLED)` in CMakeLists.txt. Currently *does not work end-to-end*: `picotool load -F romdisk.img -t bin -o 0x10200000 --family absolute` reports success and `picotool save` confirms the boot sector lands at `0x10200000` (passes the `flashfs_image_present()` 0x55AA preflight), but FatFs's `f_mount` returns `FR_NO_FILESYSTEM` (13). The image itself is valid — Linux's vfat driver mounts it fine. Root cause still TBD; suspect a picotool flash quirk on RP2350. Working alternative for now is the TAR path above.
+>
+> To disable the path entirely, delete `add_compile_definitions(FLASHFS_ENABLED)` (plus the two FLASHFS_* address defines) from the GAMEPI20 elseif in CMakeLists.txt; the rest compiles out.
+
+When working, this mounts a **read-only** FAT32 image stored directly in XIP flash and serves ROMs from it. Implementation lives in `drivers/flashfs/` (`flashfs.c` + `flashfs.h`); the dispatcher in `drivers/sdcard/sdcard.c` routes FatFs drive 1 to it when `FLASHFS_ENABLED` is set. `FF_VOLUMES=2` in `ffconf.h` (drive 0 = SD, drive 1 = flash).
+
+Flash layout (16 MB chip):
+- `0x10000000+` — firmware (~290 KB observed; leaves room to grow)
+- (grows downward to `0x10080000`) — NES SRAM save slots (`flash_range_erase`/`program`; one sector per ROM slot, indexed via `RomSelector`)
+- `0x10080000` — `NES_FILE_ADDR`, the 1 MB single-ROM (or ustar TAR) region
+- `0x10180000–0x101FFFFF` — reserved gap (512 KB)
+- **`0x10200000` — `FLASHFS_BASE_ADDR`, 14 MB FAT32 image (disabled in practice)**
+- `0x11000000` — end of flash
+
+Save games are *not* in the FAT image — they continue to live in the dedicated flash sectors below `NES_FILE_ADDR`. The FAT image only carries ROMs, so it can stay read-only without breaking saves.
+
+Boot sequence (GAMEPI20):
+1. `main()` calls `initSDCard()` first. If the card mounts, behaviour is unchanged (drive 0, ROMINFOFILE/watchdog dance, etc.).
+2. If SD fails and `FLASHFS_ENABLED`, `initFlashFS()` runs: preflights the 0x55AA boot signature, then `f_mount(&fsFlash, "1:", 1)` + `f_chdrive("1:")`. Sets the global `flashFsActive = true` on success.
+3. If both fail, `isFatalError = true` → single-ROM/TAR fallback at `NES_FILE_ADDR` (which is where the TAR path lives).
+
+Menu behaviour when `flashFsActive`:
+- The ROM-copy step (`f_read` then `flash_range_erase`/`program` into `NES_FILE_ADDR`) runs unchanged — all reads on the FAT side.
+- The `ROMINFOFILE` write is skipped (read-only filesystem).
+- The post-selection `watchdog_enable()` is skipped; `menu()` instead copies the basename into `romName` and returns. The outer loop in `main()` runs `InfoNES_Main()` against the just-flashed ROM at `NES_FILE_ADDR`. On player quit, the loop empties `selectedRom` and calls `menu()` again — no reboot needed.
+
+Tooling for the FAT image — `tools/mkromfs.sh` wraps `mkfs.fat` + `mtools`:
+
+```bash
+tools/mkromfs.sh ~/roms/nes/ romdisk.img       # build 14 MB image
+picotool load -F romdisk.img -t bin -o 0x10200000 --family absolute
+```
+
+Requires `dosfstools` + `mtools` (`sudo apt install dosfstools mtools` on Debian/Ubuntu, `brew install dosfstools mtools` on macOS).
+
 ### GamePi20 button mapping
 
 GPIOs reflect the Waveshare RP2350-PiZero's header swap (BCM↔GP not identity — see the mapping table above). NES A/B are reversed vs. the GamePi20's silkscreen so the rightmost face button registers as NES A (NES controller convention).
@@ -286,3 +339,5 @@ GAMEPI20 also defines `DISPLAY_INVERT` (sent as `DCS_ENTER_INVERT_MODE`) — the
 | `BTN_A/B/X/Y` / `JOY_UP/DOWN/LEFT/RIGHT/CTR` | Waveshare button/joystick GPIO pins |
 | `AUDIO_PIN` | PWM audio output GPIO. Per-target; default GP7. GAMEPI20 sets GP18 (earphone jack). |
 | `DISABLE_AUDIO` | Short-circuit `InfoNES_SoundOutput` and skip `multicore_launch_core1` — emulator runs silent. Used by GAMEPI20 while the GP18 audio is being investigated. |
+| `FLASHFS_ENABLED` | Compile and link `drivers/flashfs/`; `sdcard.c` dispatches FatFs drive 1 to it. GAMEPI20 only. |
+| `FLASHFS_BASE_ADDR` / `FLASHFS_SIZE_BYTES` | XIP address and byte size of the flash-resident FAT32 image. GAMEPI20: `0x10200000` / 14 MB. |

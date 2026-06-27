@@ -25,6 +25,13 @@ pico_sdk_init()
 # Add executable. Default name is the project name, version 0.1
 
 add_subdirectory(drivers/fatfs)
+# flashfs (read-only FAT32 image in XIP flash) is opt-in per target.
+# When the target's elseif block below sets HARDWARE_TARGET_FLASHFS, we add
+# the subdirectory here so the sdcard driver can see flashfs as a TARGET
+# and pull in its header for the drive-1 dispatch.
+if (HARDWARE_TARGET STREQUAL "GAMEPI20")
+    add_subdirectory(drivers/flashfs)
+endif()
 add_subdirectory(drivers/sdcard)
 
 add_executable(infoNES InfoNES.cpp K6502.cpp InfoNES_Mapper.cpp InfoNES_pAPU.cpp tar.cpp audio.c menu.cpp RomLister.cpp FrensHelpers.cpp main.cpp )
@@ -263,6 +270,12 @@ elseif(HARDWARE_TARGET STREQUAL "GAMEPI20")
     # until we revisit. DISABLE_AUDIO short-circuits InfoNES_SoundOutput and
     # prevents core1 from being launched for PWM audio output.
     add_compile_definitions(DISABLE_AUDIO)
+    # Read-only FAT32 image in XIP flash, used when no SD card is inserted.
+    # 14 MB at 0x10200000 — past the 1 MB single-ROM region at NES_FILE_ADDR
+    # plus a 512 KB safety gap. Tooling: tools/mkromfs.sh builds the image.
+    add_compile_definitions(FLASHFS_ENABLED)
+    add_compile_definitions(FLASHFS_BASE_ADDR=0x10200000)
+    add_compile_definitions(FLASHFS_SIZE_BYTES=14*1024*1024)
 endif()
 
 if(CONTROLLER_TYPE STREQUAL "NUNCHUCK")

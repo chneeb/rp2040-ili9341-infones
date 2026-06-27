@@ -14,6 +14,10 @@
 #include "ff.h"
 #include "diskio.h"
 
+#ifdef FLASHFS_ENABLED
+#include "flashfs.h"
+#endif
+
 
 /*--------------------------------------------------------------------------
 
@@ -343,13 +347,16 @@ BYTE send_cmd (		/* Return value: R1 resp (bit7==1:Failed to send) */
 /*-----------------------------------------------------------------------*/
 
 DSTATUS disk_initialize (
-	BYTE drv		/* Physical drive number (0) */
+	BYTE drv		/* Physical drive number (0 = SD, 1 = flash image) */
 )
 {
 	BYTE n, cmd, ty, ocr[4];
 	const uint32_t timeout = 1000; /* Initialization timeout = 1 sec */
 	uint32_t t;
 
+#ifdef FLASHFS_ENABLED
+	if (drv == 1) return flashfs_disk_initialize();
+#endif
 
 	if (drv) return STA_NOINIT;			/* Supports only drive 0 */
 	init_spi();							/* Initialize SPI */
@@ -413,9 +420,13 @@ DSTATUS disk_initialize (
 /*-----------------------------------------------------------------------*/
 
 DSTATUS disk_status (
-	BYTE drv		/* Physical drive number (0) */
+	BYTE drv		/* Physical drive number (0 = SD, 1 = flash image) */
 )
 {
+#ifdef FLASHFS_ENABLED
+	if (drv == 1) return flashfs_disk_status();
+#endif
+
 	if (drv) return STA_NOINIT;		/* Supports only drive 0 */
 
 	return Stat;	/* Return disk status */
@@ -428,12 +439,19 @@ DSTATUS disk_status (
 /*-----------------------------------------------------------------------*/
 
 DRESULT disk_read (
-	BYTE drv,		/* Physical drive number (0) */
+	BYTE drv,		/* Physical drive number (0 = SD, 1 = flash image) */
 	BYTE *buff,		/* Pointer to the data buffer to store read data */
 	LBA_t sector,	/* Start sector number (LBA) */
 	UINT count		/* Number of sectors to read (1..128) */
 )
 {
+#ifdef FLASHFS_ENABLED
+	if (drv == 1) {
+		if (!count) return RES_PARERR;
+		return flashfs_disk_read(buff, sector, count);
+	}
+#endif
+
 	if (drv || !count) return RES_PARERR;		/* Check parameter */
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check if drive is ready */
 
@@ -516,12 +534,16 @@ int xmit_datablock (	/* 1:OK, 0:Error */
 /*-----------------------------------------------------------------------*/
 
 DRESULT disk_write (
-	BYTE drv,			/* Physical drive number (0) */
+	BYTE drv,			/* Physical drive number (0 = SD, 1 = flash image) */
 	const BYTE *buff,	/* Ponter to the data to write */
 	LBA_t sector,		/* Start sector number (LBA) */
 	UINT count			/* Number of sectors to write (1..128) */
 )
 {
+#ifdef FLASHFS_ENABLED
+	if (drv == 1) return RES_WRPRT;		/* Flash image is read-only */
+#endif
+
 	if (drv || !count) return RES_PARERR;		/* Check parameter */
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check drive status */
 	if (Stat & STA_PROTECT) return RES_WRPRT;	/* Check write protect */
@@ -560,7 +582,7 @@ DRESULT disk_write (
 /*-----------------------------------------------------------------------*/
 
 DRESULT disk_ioctl (
-	BYTE drv,		/* Physical drive number (0) */
+	BYTE drv,		/* Physical drive number (0 = SD, 1 = flash image) */
 	BYTE cmd,		/* Control command code */
 	void *buff		/* Pointer to the conrtol data */
 )
@@ -569,6 +591,9 @@ DRESULT disk_ioctl (
 	BYTE n, csd[16];
 	DWORD *dp, st, ed, csize;
 
+#ifdef FLASHFS_ENABLED
+	if (drv == 1) return flashfs_disk_ioctl(cmd, buff);
+#endif
 
 	if (drv) return RES_PARERR;					/* Check parameter */
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check if drive is ready */

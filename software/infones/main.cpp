@@ -39,6 +39,10 @@
 
 #endif
 
+#ifdef FLASHFS_ENABLED
+#include "flashfs.h"
+#endif
+
 // #include <hagl_hal.h>
 // #include <hagl.h>
 // #define ST7789
@@ -245,7 +249,15 @@ AudioRingBuffer audioRing;
 // util::ExclusiveProc exclProc_;
 char *ErrorMessage;
 bool isFatalError = false;
+/* When true, ROM data is being served from the read-only flash FAT image
+ * (drivers/flashfs). menu.cpp uses this to skip the ROMINFOFILE write and
+ * the watchdog reboot — the flash image can't be written, and we don't need
+ * the reboot dance because audio is disabled on the only target that uses it. */
+bool flashFsActive = false;
 static FATFS fs;
+#ifdef FLASHFS_ENABLED
+static FATFS fsFlash;
+#endif
 char *romName;
 namespace
 {
@@ -556,15 +568,17 @@ void InfoNES_PadState(DWORD *pdwPad1, DWORD *pdwPad2, DWORD *pdwSystem)
         {
             if (pushed & _LEFT)
             {
-                // saveNVRAM();
-                // romSelector_.prev();
-                // reset = true;
+                /* SELECT + LEFT: previous ROM in TAR archive (no-op for single-ROM). */
+                saveNVRAM();
+                romSelector_.prev();
+                reset = true;
             }
             if (pushed & _RIGHT)
             {
-                // saveNVRAM();
-                // romSelector_.next();
-                // reset = true;
+                /* SELECT + RIGHT: next ROM in TAR archive (no-op for single-ROM). */
+                saveNVRAM();
+                romSelector_.next();
+                reset = true;
             }
             if (pushed & _START)
             {
@@ -1427,7 +1441,7 @@ bool initSDCard()
             printf(" retry %d", attempt);
             sleep_ms(500);
         }
-        fr = f_mount(&fs, "", 1);
+        fr = f_mount(&fs, "0:", 1);
     }
     if (fr != FR_OK)
     {
@@ -1479,6 +1493,43 @@ bool initSDCard()
     spi_set_baudrate(DISPLAY_SPI_PORT, DISPLAY_SPI_CLOCK_SPEED_HZ);
     return true;
 }
+
+#ifdef FLASHFS_ENABLED
+/* Mount the read-only FAT32 image in XIP flash (drivers/flashfs). Called only
+ * when initSDCard() returned false. f_chdrive("1:") switches the default drive
+ * so menu/romlister paths target the flash image without any other code change. */
+bool initFlashFS()
+{
+    printf("No SD card — trying flash FAT image at 0x%08x ... ", (unsigned)FLASHFS_BASE_ADDR);
+    /* Preflight: does the FAT boot-sector signature exist at offset 510?
+     * If not, the image was never flashed (or was wiped) — distinguish that
+     * common case from "image is present but corrupt" with a clearer message. */
+    if (!flashfs_image_present()) {
+        printf("no image flashed (use tools/mkromfs.sh + picotool load -o 0x%08x)\n",
+               (unsigned)FLASHFS_BASE_ADDR);
+        snprintf(ErrorMessage, ERRORMESSAGESIZE, "No FAT image in flash");
+        return false;
+    }
+    FRESULT fr = f_mount(&fsFlash, "1:", 1);
+    if (fr != FR_OK) {
+        printf("mount error %d (FatFs FRESULT)\n", fr);
+        snprintf(ErrorMessage, ERRORMESSAGESIZE, "Flash FS mount error: %d", fr);
+        return false;
+    }
+    fr = f_chdrive("1:");
+    if (fr != FR_OK) {
+        printf("chdrive error %d\n", fr);
+        return false;
+    }
+    fr = f_chdir("/");
+    if (fr != FR_OK) {
+        printf("chdir / error %d\n", fr);
+        return false;
+    }
+    printf("ok\n");
+    return true;
+}
+#endif
 
 int main()
 {
@@ -1624,14 +1675,23 @@ int main()
 
     // InfoNES_Main();
 
+    bool sdOk = false;
 #if SDCARD_PIN_SPI0_CS >= 0
-    isFatalError = !initSDCard();
-#else
-    isFatalError = true; // no SD card on this target
+    sdOk = initSDCard();
 #endif
-    // When a game is started from the menu, the menu will reboot the device.
-    // After reboot the emulator will start the selected game.
-    if (watchdog_caused_reboot() && isFatalError == false)
+#ifdef FLASHFS_ENABLED
+    if (!sdOk) {
+        flashFsActive = initFlashFS();
+    }
+#endif
+    isFatalError = !sdOk && !flashFsActive;
+
+    // When a game is started from the menu (SD-card mode), the menu reboots
+    // the device and after reboot we read ROMINFOFILE to launch the chosen ROM.
+    // Flash mode doesn't reboot (read-only filesystem can't persist the choice,
+    // and DISABLE_AUDIO removes the audio-restart reason for rebooting), so we
+    // skip the file read on watchdog-induced boots that landed on flashfs.
+    if (watchdog_caused_reboot() && !isFatalError && !flashFsActive)
     {
         // Determine loaded rom
         printf("Rebooted by menu\n");
@@ -1670,6 +1730,12 @@ int main()
             if(isFatalError){
                 romSelector_.init(NES_FILE_ADDR);
                 InfoNES_Main();
+                /* InfoNES_Main returns when the player quits or switches ROM
+                 * via SELECT+LEFT/RIGHT (romSelector_ has already advanced
+                 * selectedIndex_). Loop back to run the next ROM rather than
+                 * falling into the SD-based menu, which can't do anything
+                 * useful in fatal mode. */
+                continue;
             }
             menu(NES_FILE_ADDR, ErrorMessage, isFatalError);  // never returns, but reboots upon selecting a game
         }

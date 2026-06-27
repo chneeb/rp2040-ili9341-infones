@@ -679,9 +679,11 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                                 printf("%s\n", globalErrorMessage);
                                 errorInSavingRom = true;
                             }
-                            if (!errorInSavingRom)
+                            if (!errorInSavingRom && !flashFsActive)
                             {
-                                // Create file containing name currently loaded rom
+                                // Create file containing name currently loaded rom.
+                                // Skipped in flash mode — the FAT image is read-only and
+                                // we don't reboot, so romName is set directly below instead.
                                 printf("Creating %s\n", ROMINFOFILE);
                                 fr = f_open(&fil, ROMINFOFILE, FA_CREATE_ALWAYS | FA_WRITE);
                                 if (fr == FR_OK)
@@ -767,11 +769,21 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
 //     wiipad_end();
 // #endif
 
-    // Don't return from this function call, but reboot in order to get the sound properly working
-    // Starting emulator after return from menu often disables or corrupts sound
-    // After reboot, the emulator starts the selected game.
+    // Flash mode: the FAT image is read-only, so ROMINFOFILE wasn't written;
+    // hand the chosen ROM name back to main() directly and return so the outer
+    // loop runs InfoNES_Main against the freshly-flashed ROM at NES_FILE_ADDR.
+    // SD mode: reboot via the watchdog to get a clean start (kept for parity
+    // with the original "audio works better after reboot" rationale).
+    if (flashFsActive) {
+        if (selectedRomOrFolder) {
+            strncpy(romName, selectedRomOrFolder, 79);
+            romName[79] = '\0';
+        }
+        printf("Returning to main loop with selected ROM '%s'\n", romName);
+        return;
+    }
     printf("Rebooting...\n");
     watchdog_enable(100, 1);
     while(1);
-    // Never return
+    // Never return (SD-mode path)
 }
