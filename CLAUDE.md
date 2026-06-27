@@ -136,11 +136,19 @@ The SD card driver switches to `CLK_SLOW` (100 kHz) for init then `CLK_FAST` (30
 ## Build
 ```bash
 mkdir software/infones/build && cd software/infones/build
-cmake .. -DPICO_BOARD=pico2              # RP2350 (default)
+cmake .. -DPICO_BOARD=pico2              # RP2350 (default; pico2 = RP2350A, 30 GPIOs)
 # cmake .. -DPICO_BOARD=pico            # RP2040
 make
 # Flash infoNES.uf2 to the board
 ```
+
+**GAMEPI20 must use the in-tree `waveshare_rp2350_pizero` board file** (RP2350B, 48 GPIOs):
+```bash
+mkdir software/infones/build-gamepi20 && cd software/infones/build-gamepi20
+cmake .. -DPICO_BOARD=waveshare_rp2350_pizero -DHARDWARE_TARGET=GAMEPI20
+make
+```
+The `pico2` board file sets `PICO_RP2350A=1` → `NUM_BANK0_GPIOS=30`. The Waveshare RP2350-PiZero is RP2350**B** and the SD card sits on GP30/31/40/43 — addressing those pins with the wrong board file silently scribbles over unrelated MMIO registers and hangs SPI1 mid-transaction (symptom: "Mounting SDcard" never returns). The custom board file under `software/infones/boards/waveshare_rp2350_pizero.h` overrides `PICO_RP2350A=0` and sets sensible defaults; CMakeLists.txt prepends `boards/` to `PICO_BOARD_HEADER_DIRS` so the SDK finds it.
 
 **ROM loading (PICO_RESTOUCH / ORIGINAL_RP2040):** Copy `.nes` files to an SD card (FAT32). On first boot the file-browser menu appears; select a game to play. The selection is saved to `/currentloadedrom.txt` and the device reboots into the emulator. The menu reappears after the game exits.
 
@@ -149,30 +157,89 @@ make
 picotool load path/to/game.nes -t bin -o 0x10080000
 ```
 
+**ROM loading (GAMEPI20):** Same SD card flow as PICO_RESTOUCH — the RP2350-PiZero has an onboard SD slot. Copy `.nes` files to FAT32, pick from the menu, and the device reboots into the emulator.
+
 `CPU_FREQ_KHZ` is set automatically from the cmake `PICO_RP2350` variable (300 MHz for RP2350, 252 MHz for RP2040) — it is not part of `HARDWARE_TARGET`.
 
 ## Hardware Target Selection (CMakeLists.txt)
 
-Set `HARDWARE_TARGET` via `-DHARDWARE_TARGET=...` (or edit the default in CMakeLists.txt). **Delete the build folder before switching targets or boards.**
+Set `HARDWARE_TARGET` via `-DHARDWARE_TARGET=...` (or edit the default in CMakeLists.txt).
+
+**Use a separate build directory per target/board.** e.g. `build-pico-restouch/`, `build-gamepi20/`, `build-waveshare-lcd13/`. CMake re-uses cached state per directory, so switching targets is just `cd build-foo && make` — no re-download of the SDK, no recompile of TinyUSB/Pico SDK objects. Wiping a build dir is only necessary when changing something CMake can't pick up incrementally (e.g. editing a board header file in place, switching `PICO_PLATFORM` within the same dir).
 
 `HARDWARE_TARGET` describes peripheral wiring only (pins, display type, controller). Board/chip is selected separately via `-DPICO_BOARD`.
 
 ### Configuration comparison
 
-| Aspect | ORIGINAL_RP2040 | PICO_RESTOUCH | WAVESHARE_LCD13 |
+| Aspect | ORIGINAL_RP2040 | PICO_RESTOUCH | WAVESHARE_LCD13 | GAMEPI20 |
+|---|---|---|---|---|
+| Tested MCU | RP2040 | RP2350 | RP2350 | RP2350 (Waveshare RP2350-PiZero) |
+| LCD | ILI9341 320×240 | ST7789 320×240 | ST7789 240×240 | ILI9341 320×240 (GamePi20 HAT) |
+| LCD bus | hardware spi0 | hardware spi1 | hardware spi1 | hardware spi1 |
+| LCD DC/CS/CLK/MOSI | 20/17/18/19 | 8/9/10/11 | 8/9/10/11 | 25/8/10/11 |
+| LCD RST / BL | 21 / 22 | 15 / 13 | 12 / 13 | 27 / 24 |
+| SD SPI bus | spi1 (separate) | spi1 (shared, same pins) | none | spi1 (shared, separate pins) |
+| SD pins SCK/MOSI/MISO/CS | 10/11/12/13 | 10/11/12/22 | — | 30/31/40/43 (RP2350-PiZero onboard) |
+| Touch CS | none | GP16 | none | none |
+| Controller | none | NES Mini (i2c1, GP26/27) | GPIO buttons+joystick | GPIO buttons+D-pad |
+| CPU clock | from chip (252/300 MHz) | from chip (252/300 MHz) | from chip (252/300 MHz) | from chip (252/300 MHz) |
+| VREG | no | VREG_VOLTAGE_1_20 | VREG_VOLTAGE_1_20 | VREG_VOLTAGE_1_20 |
+| `SHARED_SPI_BUS` | — | ✓ | — | ✓ |
+| NES scanlines rendered | 4–235 (232 rows) | 4–235 (232 rows) | 0–239 (240 rows) | 4–235 (232 rows) |
+
+### Waveshare RP2350-PiZero header GPIO mapping
+
+The board is **not** a straight GP=BCM mapping. Waveshare swapped pins so the RP2350's hardware **SPI1** and **UART1** land at the Pi-standard SPI0 / UART0 positions on the 40-pin header. Verified from the silkscreen on the back of the board:
+
+| Swap pair | Pi role on header | Pi BCM | RP2350 GP | RP2350 function |
+|---|---|---|---|---|
+| SPI MOSI/MISO/SCK | pin 19 (MOSI) | BCM10 | **GP11** | SPI1_TX |
+| | pin 23 (SCLK) | BCM11 | **GP10** | SPI1_SCK |
+| | pin 21 (MISO) | BCM9 | **GP12** | SPI1_RX |
+| UART TX/RX | pin 8 (TX) | BCM14 | **GP4** | UART1_TX |
+| | pin 10 (RX) | BCM15 | **GP5** | UART1_RX |
+| (displaced) | pin 7 | BCM4 | **GP14** | — |
+| (displaced) | pin 29 | BCM5 | **GP15** | — |
+| (displaced) | pin 32 | BCM12 | **GP9** | — |
+
+All other header GPIOs map GP*n* = BCM*n*.
+
+**Practical implications for GAMEPI20:**
+- The LCD uses hardware SPI1: `LCD_CLK=10`, `LCD_MOSI=11` — these land at pins 23/19 (BCM11/BCM10 = `LCD_SCK`/`LCD_MOSI` on the GamePi20). Hardware SPI works without jumpers because of the board's internal swap.
+- The GamePi20 D-pad UP (BCM12, pin 32) lands on **GP9**, not GP12. Earlier the firmware used `JOY_UP=12` (assuming GP=BCM) — pressing UP did nothing because GP12 is actually at pin 21 (BCM9 / MISO position).
+- B button (BCM4, pin 7) → **GP14**. TL shoulder (BCM5, pin 29) → **GP15**.
+- An even earlier iteration drove the LCD via PIO with MOSI=GP10/SCK=GP11. On this board that routes MOSI to pin 23 (LCD_SCK) and SCK to pin 19 (LCD_MOSI) — the LCD never receives framed data, screen stays dark with backlight on. The fix is just to use hardware SPI1 with `LCD_CLK=10, LCD_MOSI=11`.
+- If a future Pi-Zero-style RP2350 board uses a different mapping, the corresponding firmware changes are confined to the GPIO numbers in CMakeLists.txt — no driver changes needed.
+
+### GAMEPI20 SD card (RP2350-PiZero onboard slot)
+
+Hardware SPI1, SCK=GP30, MOSI=GP31, MISO=GP40, CS=GP43 — RP2350B extended GPIOs, internally wired on the board (do not pass through the 40-pin header).
+
+Both the LCD (via GP10/11) and the SD card (via GP30/31/40) live on the *same* SPI1 peripheral. Configuring SPI1 with both pin sets means SPI1 drives them simultaneously (GP10 and GP30 both clock; GP11 and GP31 both carry MOSI data), with CS lines keeping the two devices separated. This is the "shared SPI1, separate physical wires" pattern — `SHARED_SPI_BUS` workarounds still apply (LCD CS HIGH during SD ops, SD CS HIGH at boot, baudrate restore after SD ops).
+
+`sdcard.c`'s `init_spi()` calls `gpio_set_function(SCK/MOSI, GPIO_FUNC_SPI)` unconditionally. For PICO_RESTOUCH this is a harmless no-op (display init already set those same pins). For GAMEPI20 it's required because the LCD's SPI init configures GP10/11, not GP30/31.
+
+### GamePi20 button mapping
+
+GPIOs reflect the Waveshare RP2350-PiZero's header swap (BCM↔GP not identity — see the mapping table above). NES A/B are reversed vs. the GamePi20's silkscreen so the rightmost face button registers as NES A (NES controller convention).
+
+| NES button | GamePi20 input | BCM | GP |
 |---|---|---|---|
-| Tested MCU | RP2040 | RP2350 | RP2350 |
-| LCD | ILI9341 320×240 | ST7789 320×240 | ST7789 240×240 |
-| LCD SPI / DC/CS/CLK/MOSI | spi0 / 20/17/18/19 | spi1 / 8/9/10/11 | spi1 / 8/9/10/11 |
-| LCD RST / BL | 21 / 22 | 15 / 13 | 12 / 13 |
-| SD SPI bus | spi1 (separate) | spi1 (shared) | none |
-| SD CS | 13 | 22 | — |
-| Touch CS | none | GP16 | none |
-| Controller | none | NES Mini (i2c1, GP26/27) | GPIO buttons+joystick |
-| CPU clock | from chip (252/300 MHz) | from chip (252/300 MHz) | from chip (252/300 MHz) |
-| VREG | no | VREG_VOLTAGE_1_20 | VREG_VOLTAGE_1_20 |
-| `SHARED_SPI_BUS` | — | ✓ | — |
-| NES scanlines rendered | 4–235 (232 rows) | 4–235 (232 rows) | 0–239 (240 rows) |
+| A | **B** button (rightmost on GamePi20 layout) | BCM4 | **GP14** |
+| B | **A** button | BCM23 | GP23 |
+| Select | SELECT | BCM16 | GP16 |
+| Start | START | BCM26 | GP26 |
+| Up | Up D-pad | BCM12 | **GP9** |
+| Down | Down D-pad | BCM20 | GP20 |
+| Left | Left D-pad | BCM21 | GP21 |
+| Right | Right D-pad | BCM13 | GP13 |
+| (quit/menu) | TL shoulder | BCM5 | **GP15** |
+
+Bolded GPs are the ones that diverge from the naive GP=BCM assumption — those positions take their values from the RP2350-PiZero's internal header swap.
+
+Unmapped GamePi20 buttons: X (BCM22/GP22), Y (BCM17/GP17), TR (BCM6/GP6). Extend `InfoNES_PadState()` to use them if needed.
+
+Audio: `DISABLE_AUDIO` is currently defined for GAMEPI20 — the PWM audio output to GP18 (BCM18, header pin 12 / earphone jack) sounds wrong and is short-circuited until that's diagnosed. With the flag set, `InfoNES_SoundOutput` returns immediately and `multicore_launch_core1` is skipped (no PWM init, core1 stays idle). The pin selection itself is configurable per target via the `AUDIO_PIN` CMake variable (default GP7 preserves prior behaviour for non-GAMEPI20 targets); re-enable later by removing `add_compile_definitions(DISABLE_AUDIO)` from the GAMEPI20 elseif branch in CMakeLists.txt.
 
 ### Waveshare Pico LCD 1.3" button mapping
 
@@ -193,8 +260,11 @@ Each target has its own `DISPLAY_ADDRESS_MODE` defined in `main.cpp`:
 | Target | DISPLAY_ADDRESS_MODE | Value |
 |---|---|---|
 | ORIGINAL_RP2040 (ILI9341) | `DCS_ADDRESS_MODE_BGR \| DCS_ADDRESS_MODE_SWAP_XY` | 0x28 |
+| GAMEPI20 (ILI9341) | `DCS_ADDRESS_MODE_RGB \| DCS_ADDRESS_MODE_SWAP_XY \| DCS_ADDRESS_MODE_MIRROR_Y` | 0xA0 |
 | PICO_RESTOUCH (ST7789 320×240) | `DCS_ADDRESS_MODE_RGB \| DCS_ADDRESS_MODE_SWAP_XY \| DCS_ADDRESS_MODE_MIRROR_Y` | 0xA0 |
 | WAVESHARE_LCD13 (ST7789 240×240) | `DCS_ADDRESS_MODE_MIRROR_X \| DCS_ADDRESS_MODE_SWAP_XY` | 0x60 |
+
+GAMEPI20 also defines `DISPLAY_INVERT` (sent as `DCS_ENTER_INVERT_MODE`) — the specific ILI9341 panel on the GamePi20 boots with inverted pixel polarity.
 
 **WAVESHARE_LCD13 GRAM offset**: No offset needed (`DISPLAY_OFFSET_X=0`, `DISPLAY_OFFSET_Y=0`). The MX mirror in `0x60` compensates for the 80-row portrait-mode GRAM offset of the ST7789 240×240 panel, so `CASET(0, 239)` and `RASET(0, 239)` map directly to the full visible area.
 
@@ -214,3 +284,5 @@ Each target has its own `DISPLAY_ADDRESS_MODE` defined in `main.cpp`:
 | `CONTROLLER_GPIO_BUTTONS` | GPIO button+joystick input |
 | `NUNCHUCK_I2C_BUS` / `NUNCHUCK_SDA` / `NUNCHUCK_SCL` | Nunchuck I2C bus and pins |
 | `BTN_A/B/X/Y` / `JOY_UP/DOWN/LEFT/RIGHT/CTR` | Waveshare button/joystick GPIO pins |
+| `AUDIO_PIN` | PWM audio output GPIO. Per-target; default GP7. GAMEPI20 sets GP18 (earphone jack). |
+| `DISABLE_AUDIO` | Short-circuit `InfoNES_SoundOutput` and skip `multicore_launch_core1` — emulator runs silent. Used by GAMEPI20 while the GP18 audio is being investigated. |

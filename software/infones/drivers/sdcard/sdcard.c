@@ -141,10 +141,16 @@ void init_spi(void)
 	gpio_pull_up(SDCARD_PIN_SPI0_MISO);
 
 #ifndef SDCARD_PIO
-	/* SCK and MOSI are shared with the display driver which already called
-	 * gpio_set_function() on them — do NOT call gpio_init() on those pins.
-	 * We DO call spi_init() to reset the peripheral and clear residual state
-	 * from high-speed display operations. */
+	/* SCK/MOSI: ensure they are routed to the SPI peripheral. When they are the
+	 * same physical pins as the display (PICO_RESTOUCH), this is a harmless
+	 * no-op because display_init() already set them to GPIO_FUNC_SPI. When the
+	 * SD has its own SCK/MOSI on extended GPIOs (GAMEPI20: SPI1 on GP30/31), this
+	 * is required so SPI1 actually drives those pins. We use gpio_set_function
+	 * (not gpio_init) so any prior pin state on the shared pins is preserved. */
+	gpio_set_function(SDCARD_PIN_SPI0_SCK,  GPIO_FUNC_SPI);
+	gpio_set_function(SDCARD_PIN_SPI0_MOSI, GPIO_FUNC_SPI);
+	/* spi_init() resets the peripheral and clears residual state from
+	 * high-speed display operations. */
 	spi_init(SDCARD_SPI_BUS, CLK_SLOW);
 #else
     gpio_set_dir(SDCARD_PIN_SPI0_SCK, GPIO_OUT);

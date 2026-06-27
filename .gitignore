@@ -1,1 +1,4 @@
 software/infones/build/*
+software/infones/build-*/
+software/infones/pico.log
+

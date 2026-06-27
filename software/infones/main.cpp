@@ -86,6 +86,17 @@
 #define DISPLAY_ADDRESS_MODE DCS_ADDRESS_MODE_MIRROR_X | DCS_ADDRESS_MODE_SWAP_XY
 #define    DISPLAY_OFFSET_X 0
 #define    DISPLAY_OFFSET_Y 0
+#elif defined(HARDWARE_TARGET_GAMEPI20)
+/* GamePi20 (ILI9341) is mounted rotated 180° vs ORIGINAL_RP2040 and the panel
+ * accepts pixels in RGB order (vs ORIGINAL_RP2040's BGR). The 180° rotation
+ * of the X-mirror state is the Y-mirror state — using MX alone leaves the
+ * image upside-down; adding MY on top of MX only flips one further axis,
+ * not 180°. Final mode: RGB | MV | MY = 0xA0. */
+#undef  DISPLAY_ADDRESS_MODE
+#define DISPLAY_ADDRESS_MODE (DCS_ADDRESS_MODE_RGB | DCS_ADDRESS_MODE_SWAP_XY \
+                              | DCS_ADDRESS_MODE_MIRROR_Y)
+#define    DISPLAY_OFFSET_X 0
+#define    DISPLAY_OFFSET_Y 0
 #else
 #define    DISPLAY_OFFSET_X 0
 #define    DISPLAY_OFFSET_Y 0
@@ -665,6 +676,12 @@ int __not_in_flash_func(InfoNES_GetSoundBufferSize)()
  */
 void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3, BYTE *wave4, BYTE *wave5)
 {
+#ifdef DISABLE_AUDIO
+    /* Audio disabled at compile time — drop samples on the floor. Skipping the
+     * audioRing write also skips the latency-throttle loop below, which would
+     * otherwise hang waiting for core1 to drain. */
+    return;
+#endif
     static int test_i=0;
 
     SoundOutputBuilding = true;
@@ -842,7 +859,7 @@ static void __not_in_flash_func(speed_control)(void)
 static BYTE old_frame_skip_counter;
 void __not_in_flash_func(core1_main)()
 {
-    audio_init(7, 22050);
+    audio_init(AUDIO_PIN, 22050);
 
     while (true) {
         uint8_t *buf = audio_get_buffer();
@@ -1322,7 +1339,6 @@ static void display_spi_master_init()
     }
     dma_channel_set_config(display_dma_channel, &channel_config, false);
     dma_channel_set_write_addr(display_dma_channel, &spi_get_hw(DISPLAY_SPI_PORT)->dr, false);
-
 }
 
 void display_init()
@@ -1602,7 +1618,9 @@ int main()
     // 空サンプル詰めとく
     dvi_->getAudioRingBuffer().advanceWritePointer(255);
 #endif
+#ifndef DISABLE_AUDIO
     multicore_launch_core1(core1_main);
+#endif
 
     // InfoNES_Main();
 

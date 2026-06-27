@@ -9,6 +9,11 @@ set(CMAKE_CXX_STANDARD 17)
 # (note this can come from environment, CMake cache etc)
 #set(PICO_SDK_PATH "../../../pico-sdk")
 
+# Make our in-tree custom board files (e.g. waveshare_rp2350_pizero.h) discoverable
+# by PICO_BOARD=<name>. Must be set BEFORE pico_sdk_import.cmake — the board file
+# is located during SDK import, not pico_sdk_init().
+list(APPEND PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards)
+
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
@@ -39,7 +44,7 @@ target_link_libraries(infoNES pico_stdlib)
 #   PICO_RESTOUCH     — RP2350 + ST7789  320×240, spi1 shared by LCD, SD, touch (current default)
 #   WAVESHARE_LCD13   — RP2350 + ST7789  240×240, spi1 LCD only, GPIO buttons+joystick
 set(HARDWARE_TARGET "PICO_RESTOUCH" CACHE STRING
-    "Hardware target: ORIGINAL_RP2040 | PICO_RESTOUCH | WAVESHARE_LCD13")
+    "Hardware target: ORIGINAL_RP2040 | PICO_RESTOUCH | WAVESHARE_LCD13 | GAMEPI20")
 
 if(HARDWARE_TARGET STREQUAL "ORIGINAL_RP2040")
     # RP2040 + ILI9341 — LCD on spi0, SD on spi1 (separate buses, no touch, no I2C controller)
@@ -123,9 +128,60 @@ elseif(HARDWARE_TARGET STREQUAL "WAVESHARE_LCD13")
     set(JOY_RIGHT "20")
     set(JOY_CTR   "3")
 
+elseif(HARDWARE_TARGET STREQUAL "GAMEPI20")
+    # Waveshare RP2350-PiZero + GamePi20 HAT (ILI9341 320x240).
+    # Critical board detail: the Waveshare RP2350-PiZero cross-wires GP10 ↔ GP11
+    # internally so that the RP2350's hardware SPI1 (TX=GP11, SCK=GP10) appears at
+    # the Pi header positions BCM10 (MOSI) and BCM11 (SCK). See RP2350-PiZero
+    # schematic — the labels `SPI_MOSI`/`SPI_SCLK` route to GPIO11/GPIO10
+    # respectively. Every other GPIO on the header matches BCM number directly.
+    # Net effect: plug the board into the GamePi20 header and hardware SPI1
+    # talks to the LCD correctly with no jumpers and no PIO.
+    # SD card lives on hardware SPI1's extended GPIOs (30/31/40/43) on the same
+    # peripheral as the LCD — SHARED_SPI_BUS workarounds still apply.
+    set(LCD_CONTROLLER "ILI9341")
+    set(LCD_SPI  "spi1")
+    set(LCD_DC   "25")   # BCM25, header pin 22
+    set(LCD_CS   "8")    # BCM8,  header pin 24
+    set(LCD_CLK  "10")   # SPI1_SCK → board internal swap → header pin 23 (BCM11/LCD_SCK)
+    set(LCD_MOSI "11")   # SPI1_TX  → board internal swap → header pin 19 (BCM10/LCD_MOSI)
+    set(LCD_RST  "27")   # BCM27, header pin 13
+    set(LCD_BL   "24")   # BCM24, header pin 18
+    set(LCD_MISO "-1")
+    set(TOUCH_CS "-1")
+    # RP2350-PiZero onboard SD card slot (extended GPIOs, SPI1)
+    set(SD_SPI   "spi1")
+    set(SD_CS    "43")   # GP43 = SPI1_CSn (extended)
+    set(SD_SCK   "30")   # GP30 = SPI1_SCK (extended)
+    set(SD_MOSI  "31")   # GP31 = SPI1_TX  (extended)
+    set(SD_MISO  "40")   # GP40 = SPI1_RX  (extended)
+    set(DISPLAY_WIDTH "320")
+    set(DISPLAY_HEIGHT "240")
+    set(NES_FIRST_SCANLINE "4")
+    set(NES_LAST_SCANLINE "235")
+    # NOTE: the Waveshare RP2350-PiZero swaps several GPIOs on the 40-pin header
+    # so its hardware SPI1 and UART1 land at the Pi-standard SPI0/UART0 positions.
+    # The displaced GPIOs (GP4/5/9/14/15) take the other ends of those swaps.
+    # See "Waveshare RP2350-PiZero header GPIO mapping" in CLAUDE.md.
+    # GPIOs below are RP2350 GPIO numbers (NOT BCM), matched against the
+    # GamePi20 button-to-BCM spec via the header mapping.
+    set(CONTROLLER_TYPE "GPIO_BUTTONS")
+    # A/B physically reversed vs. NES controller layout on the GamePi20 — swap so
+    # pressing the rightmost face button registers as NES A.
+    set(BTN_A  "14")   # GamePi20 B button (BCM4,  pin 7)  → GP14 (swap) → NES A
+    set(BTN_B  "23")   # GamePi20 A button (BCM23, pin 16) → GP23        → NES B
+    set(BTN_X  "16")   # SELECT    (BCM16, pin 36) → GP16 → NES Select
+    set(BTN_Y  "26")   # START     (BCM26, pin 37) → GP26 → NES Start
+    set(JOY_UP    "9")   # Up    (BCM12, pin 32) → GP9 (swap)
+    set(JOY_DOWN  "20")  # Down  (BCM20, pin 38) → GP20
+    set(JOY_LEFT  "21")  # Left  (BCM21, pin 40) → GP21
+    set(JOY_RIGHT "13")  # Right (BCM13, pin 33) → GP13
+    set(JOY_CTR   "15")  # TL shoulder (BCM5, pin 29) → GP15 (swap) — quit button
+    set(AUDIO_PIN "18")  # Earphone jack (BCM18, pin 12) → GP18 — PWM audio output
+
 else()
     message(FATAL_ERROR "Unknown HARDWARE_TARGET '${HARDWARE_TARGET}'. "
-            "Choose: ORIGINAL_RP2040, PICO_RESTOUCH, WAVESHARE_LCD13")
+            "Choose: ORIGINAL_RP2040, PICO_RESTOUCH, WAVESHARE_LCD13, GAMEPI20")
 endif()
 
 # ── CPU frequency — derived from chip, not wiring ───────────────────────────
@@ -143,6 +199,13 @@ message("SD card SPI/CS      : ${SD_SPI} / ${SD_CS}")
 message("Touch CS            : ${TOUCH_CS}")
 message("CPU freq (kHz)      : ${CPU_FREQ_KHZ}")
 message("Controller          : ${CONTROLLER_TYPE}")
+message("Audio PWM pin       : GP${AUDIO_PIN}")
+
+# Default audio PWM output pin for targets that don't override AUDIO_PIN.
+# GP7 was the historical hardcoded value; preserve it for existing targets.
+if(NOT DEFINED AUDIO_PIN)
+    set(AUDIO_PIN "7")
+endif()
 
 target_compile_definitions(infoNES PRIVATE
     HARDWARE_TARGET_${HARDWARE_TARGET}
@@ -165,11 +228,17 @@ target_compile_definitions(infoNES PRIVATE
     DISPLAY_HEIGHT=${DISPLAY_HEIGHT}
     NES_FIRST_SCANLINE=${NES_FIRST_SCANLINE}
     NES_LAST_SCANLINE=${NES_LAST_SCANLINE}
+    AUDIO_PIN=${AUDIO_PIN}
 )
 
 if(LCD_CONTROLLER STREQUAL "ILI9341")
     add_compile_definitions(ILI9341)
     add_compile_definitions(DISPLAY_SPI_CLOCK_SPEED_HZ=63000000)
+    if(HARDWARE_TARGET STREQUAL "GAMEPI20")
+        # GamePi20 ILI9341 panel boots with inverted pixel polarity — enable
+        # DCS_ENTER_INVERT_MODE so black/white render correctly.
+        add_compile_definitions(DISPLAY_INVERT)
+    endif()
 elseif(LCD_CONTROLLER STREQUAL "ST7789")
     add_compile_definitions(ST7789)
     add_compile_definitions(DISPLAY_INVERT)
@@ -182,6 +251,18 @@ if(HARDWARE_TARGET STREQUAL "PICO_RESTOUCH")
     add_compile_definitions(OVERCLOCK_VREG)
 elseif(HARDWARE_TARGET STREQUAL "WAVESHARE_LCD13")
     add_compile_definitions(OVERCLOCK_VREG)
+elseif(HARDWARE_TARGET STREQUAL "GAMEPI20")
+    # LCD on hardware SPI1 (GP10/11) — the RP2350-PiZero board internally swaps
+    # those two so SPI1's pin roles land at the Pi header's expected BCM10/BCM11
+    # positions. SD card also on SPI1 via extended GPIOs 30/31/40/43 — same
+    # situation as PICO_RESTOUCH (LCD and SD parallel on SPI1), so the shared-bus
+    # workarounds (LCD CS HIGH during SD ops, SD CS HIGH at boot) apply.
+    add_compile_definitions(SHARED_SPI_BUS)
+    add_compile_definitions(OVERCLOCK_VREG)
+    # Audio output on the GamePi20's earphone jack (GP18) sounds wrong; disable
+    # until we revisit. DISABLE_AUDIO short-circuits InfoNES_SoundOutput and
+    # prevents core1 from being launched for PWM audio output.
+    add_compile_definitions(DISABLE_AUDIO)
 endif()
 
 if(CONTROLLER_TYPE STREQUAL "NUNCHUCK")
