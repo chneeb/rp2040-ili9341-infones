@@ -274,7 +274,7 @@ shared sources. They are gitignored.
 
 SD card: `bootcode.bin`, `start.elf`, `fixup.dat` (from `make` in
 `circle/boot`), `config.txt` (a copy of `circle/boot/config32.txt`),
-`cmdline.txt`, `kernel.img`, and a ROM at `/rom.nes`.
+`cmdline.txt`, `kernel.img`, and the games in a `nes/` directory.
 
 ### Four things the core needs that it does not advertise
 
@@ -364,7 +364,7 @@ and is the only place any of this lives.
 | X | 22 | B |
 | Y | 17 | A |
 | Up / Down / Left / Right | 12 / 20 / 21 / 13 | D-pad |
-| SELECT / START | 16 / 26 | Select / Start |
+| SELECT / START | 16 / 26 | Select / Start; together, quit to the ROM menu |
 | TL / TR | 5 / 6 | volume, not the pad — see below |
 
 **A and B are crossed on purpose.** The board's silkscreen does not follow the
@@ -436,8 +436,36 @@ ended, which is what that build does and what makes it drift. A frame that
 overruns writes the lost time off instead of making it up: catching up means
 sprinting through the frames after it, which looks worse than one late frame.
 
+### ROM menu
+
+`RomMenu.{h,cpp}`. Lists the `.nes` files in `/nes` on the card, Up and Down to
+move, A or START to launch, SELECT + START to quit back to it.
+
+Drawn with `C2DGraphics`, which comes free: `ST7789DMADisplay` is a `CDisplay`,
+so `C2DGraphics` attaches straight to it and brings `DrawText` and Circle's
+built-in fonts along. No font assets, nothing extra on the card. The menu uses
+the whole 320x240; the emulator keeps handing its 256x240 frame to the display
+directly, and the two never draw at once.
+
+**The loop belongs to InfoNES, not to the kernel.** `InfoNES_Main()` runs
+`InfoNES_Menu()` then `InfoNES_Cycle()`, over and over; `PAD_SYS_QUIT` in
+`InfoNES_PadState()` unwinds out of the cycle (`InfoNES.cpp:864`, checked once
+a scanline) and lands back in the menu. So the ROM picker *is*
+`InfoNES_Menu()`, and `InfoNES_Load()` - which releases the old ROM, reads the
+new one and resets - is all the teardown a game change needs. An earlier
+version drove this from `CKernel::Run()` instead, which meant quitting would
+have restarted the same ROM.
+
+The menu blacks out the whole panel before returning. The emulator only writes
+the 256 wide strip in the middle, so otherwise the menu's background would stay
+in the pillarbox bars for the whole game.
+
+Presses are edge-detected against a snapshot taken when the menu opens: at
+60 Hz a held button runs through the list in well under a second, and the quit
+chord means SELECT and START are usually still down on the way in.
+
 ### Not done yet
 
-- **ROM selection.** `InfoNES_Menu()` returns 0 and `kernel.cpp` loads a fixed
-  `/rom.nes`. `menu.cpp` and `RomLister.cpp` in the pico build are the model,
-  but they are pico-sdk bound.
+- Nothing outstanding. Possible next steps: save states, an on-screen volume
+  indicator (X and Y are the only spare buttons), or per-game battery-backed
+  SRAM.

@@ -17,7 +17,7 @@
 CIRCLEHOME = ../../../circle
 INFONES    = ..
 
-OBJS	= main.o kernel.o ST7789DMADisplay.o InfoNES_System_Circle.o
+OBJS	= main.o kernel.o ST7789DMADisplay.o RomMenu.o InfoNES_System_Circle.o
 
 # Emulator core, shared with the pico build, untouched. The 137 mappers are
 # not listed: InfoNES_Mapper.cpp #includes them all, so they are not separate

@@ -3,6 +3,7 @@
 //
 #include "kernel.h"
 #include "GamePi20.h"
+#include "RomMenu.h"
 #include <circle/util.h>
 #include <assert.h>
 
@@ -12,7 +13,9 @@
 #include "InfoNES.h"
 
 #define DRIVE		"SD:"
-#define ROM_FILE	"SD:/rom.nes"
+
+// Where the menu looks for .nes files.
+#define ROM_DIRECTORY	"SD:/nes"
 
 // The panel's colour model is big endian RGB565 (ST7789_SWAP_COLOR_BYTES is
 // TRUE, because the NES palette is stored that way), so colours written by
@@ -329,17 +332,17 @@ TShutdownMode CKernel::Run (void)
 		return ShutdownHalt;
 	}
 
-	InfoNES_Init ();
-
-	if (InfoNES_Load (ROM_FILE) != 0)
+	m_pMenu = new CRomMenu (&m_Display);
+	if (m_pMenu == 0 || !m_pMenu->Initialize ())
 	{
-		// No ROM: leave the panel showing whatever is there and stop, rather
-		// than running the emulator on nothing.
 		return ShutdownHalt;
 	}
 
-	// Never returns: InfoNES_Main() is the emulator's own loop, and it calls
-	// back into this port through InfoNES_System_Circle.cpp.
+	m_pMenu->Scan (ROM_DIRECTORY);
+
+	// InfoNES_Main() owns the loop from here: it calls InfoNES_Menu(), which
+	// comes back through ChooseRom() below, then runs the game until the quit
+	// chord is pressed, then asks for a ROM again.
 	InfoNES_Main ();
 
 	f_mount (0, DRIVE, 0);
@@ -466,6 +469,24 @@ int GamePi20_SoundWrite (const unsigned char *pSamples, int nCount)
 	assert (pKernel != 0);
 
 	return pKernel->SoundWrite (pSamples, nCount);
+}
+
+const char *CKernel::ChooseRom (void)
+{
+	if (m_pMenu == 0)
+	{
+		return nullptr;
+	}
+
+	return m_pMenu->Run (GamePi20_ReadPad, GamePi20_WaitForNextFrame);
+}
+
+const char *GamePi20_ChooseRom (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->ChooseRom ();
 }
 
 unsigned GamePi20_GetVolume (void)

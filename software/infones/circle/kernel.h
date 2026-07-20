@@ -18,6 +18,8 @@
 #include <SDCard/emmc.h>
 #include <fatfs/ff.h>
 
+class CRomMenu;
+
 #include "DisplayConfig.h"
 #include "InputConfig.h"
 
@@ -41,6 +43,7 @@ public:
 	void PresentFrame (const u16 *pFrame);
 	unsigned ReadPad (void);
 	void WaitForNextFrame (void);
+	const char *ChooseRom (void);
 	int SoundOpen (int nSampleRate);
 	void SoundClose (void);
 	int SoundWrite (const unsigned char *pSamples, int nCount);
@@ -87,6 +90,10 @@ private:
 
 	// Created once the emulator says what rate it wants.
 	CPWMSoundBaseDevice *m_pSound = 0;
+
+	// Lives for the whole session: InfoNES_Main() comes back to the menu
+	// every time a game is quit.
+	CRomMenu *m_pMenu = 0;
 
 	static CKernel *s_pThis;
 };

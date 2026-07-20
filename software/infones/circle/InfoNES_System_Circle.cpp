@@ -98,11 +98,20 @@ int InfoNES_LoadFrame (void)
 // Input
 //
 
+// SELECT and START together quit back to the ROM menu. The core checks
+// PAD_SYS_QUIT once a scanline and unwinds out of InfoNES_Cycle(), which drops
+// InfoNES_Main() back to InfoNES_Menu() - the menu below.
+#define PAD_SELECT	0x04
+#define PAD_START	0x08
+
 void InfoNES_PadState (DWORD *pdwPad1, DWORD *pdwPad2, DWORD *pdwSystem)
 {
-	*pdwPad1 = GamePi20_ReadPad ();
+	unsigned nPad = GamePi20_ReadPad ();
+
+	*pdwPad1 = nPad;
 	*pdwPad2 = 0;
-	*pdwSystem = 0;
+	*pdwSystem =   (nPad & (PAD_SELECT | PAD_START)) == (PAD_SELECT | PAD_START)
+		     ? PAD_SYS_QUIT : 0;
 }
 
 //
@@ -185,10 +194,23 @@ void InfoNES_ReleaseRom (void)
 // Menu
 //
 
+// Called by InfoNES_Main() before each game, and again every time one is
+// quit. Returning -1 would end InfoNES_Main() altogether, which only happens
+// here when there is nothing to play.
 int InfoNES_Menu (void)
 {
-	// 0 keeps the emulator running. A ROM browser would go here; for now the
-	// ROM to load is decided in kernel.cpp.
+	const char *pRom = GamePi20_ChooseRom ();
+	if (pRom == nullptr)
+	{
+		return -1;
+	}
+
+	// Releases the previous ROM, reads the new one and resets the machine.
+	if (InfoNES_Load (pRom) != 0)
+	{
+		return -1;
+	}
+
 	return 0;
 }
 
