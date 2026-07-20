@@ -3,6 +3,12 @@
 ## Project Overview
 RP2350-based handheld NES emulator using InfoNES, driving an ST7789 (or ILI9341) LCD via overclocked SPI. Despite the repo name referencing RP2040/ILI9341, the actual hardware is an RP2350 with an ST7789 display.
 
+**There are two ports in this repository.** Everything below describes the
+pico-sdk one unless it says otherwise. The second, on branch `circle-gamepi20`,
+runs the same emulator bare metal on a Raspberry Pi Zero via Circle — see
+[The Circle / GamePi20 port](#the-circle--gamepi20-port). They share the
+emulator core and the 137 mappers untouched; only the platform layer differs.
+
 ## Key Files
 - `software/infones/main.cpp` — main application: display init, DMA rendering loop, InfoNES callbacks, controller input, SD card init, ROM loading
 - `software/infones/CMakeLists.txt` — build config; selects LCD controller, defines all pin assignments
@@ -214,3 +220,151 @@ Each target has its own `DISPLAY_ADDRESS_MODE` defined in `main.cpp`:
 | `CONTROLLER_GPIO_BUTTONS` | GPIO button+joystick input |
 | `NUNCHUCK_I2C_BUS` / `NUNCHUCK_SDA` / `NUNCHUCK_SCL` | Nunchuck I2C bus and pins |
 | `BTN_A/B/X/Y` / `JOY_UP/DOWN/LEFT/RIGHT/CTR` | Waveshare button/joystick GPIO pins |
+
+---
+
+## The Circle / GamePi20 port
+
+Branch `circle-gamepi20`. The same InfoNES core, running bare metal on a
+Raspberry Pi Zero (W) in a Waveshare GamePi20, through
+[Circle](https://github.com/rsta2/circle) instead of the pico-sdk. No OS.
+
+Working on hardware: picture, colours and buttons. Not done: sound, frame
+pacing, ROM selection.
+
+The display driver, pin numbers and the bring-up approach come from the
+`circle-arcade` project (github.com/chneeb/circle-arcade), which was taken
+through the same hardware first. Its CLAUDE.md documents how each value was
+arrived at and is worth reading alongside this.
+
+### Layout
+
+```
+circle/                                  submodule, pinned to Step51
+configure-gamepi20.sh                    configures and builds Circle
+software/infones/
+├── InfoNES.cpp, K6502.cpp, mapper/      shared with the pico build, untouched
+├── InfoNES_System.h                     the porting seam: 13 functions
+├── main.cpp, CMakeLists.txt             pico platform layer
+├── linux/InfoNES_System_Linux.cpp       reference port, not built
+└── circle/                              this port
+    ├── Makefile
+    ├── main.cpp, kernel.{cpp,h}
+    ├── InfoNES_System_Circle.cpp        the 13 functions, plus NesPalette
+    ├── ST7789DMADisplay.{h,cpp}         panel driver, frames over DMA
+    ├── DisplayConfig.h, InputConfig.h   pins and panel settings
+    ├── GamePi20.h                       bridge: emulator <-> kernel
+    ├── pico.h, PicoCompat.h             stand-ins, see below
+    └── stdshim/                         four C++ headers, see below
+```
+
+CMake never looks at `circle/`, so the two builds coexist. The Circle Makefile
+reaches the shared sources by relative path, so nothing is duplicated and
+`git fetch upstream` still merges.
+
+### Build
+
+```bash
+./configure-gamepi20.sh          # from the repository root, once
+cd software/infones/circle && make
+```
+
+Circle's Rules.mk compiles in place, so this leaves `.o`/`.d` files next to the
+shared sources. They are gitignored.
+
+SD card: `bootcode.bin`, `start.elf`, `fixup.dat` (from `make` in
+`circle/boot`), `config.txt` (a copy of `circle/boot/config32.txt`),
+`cmdline.txt`, `kernel.img`, and a ROM at `/rom.nes`.
+
+### Four things the core needs that it does not advertise
+
+Each of these fails in a way that does not point at its cause:
+
+- **`<pico.h>` is included directly** by `InfoNES.cpp`, `K6502.cpp` and
+  `InfoNES_Mapper.cpp`, for `__not_in_flash_func()`. The local `pico.h` takes
+  that name on the include path and defines the pico macros away. It also has
+  to supply `<stdint.h>`, which the real one pulls in — without it `uint16_t`
+  is undeclared and the errors point at `makeTag` instead.
+- **The 137 mappers are `#include`d into `InfoNES_Mapper.cpp`**, so they are
+  not separate translation units. Listing them as objects gives a wall of
+  `'BYTE' does not name a type`.
+- **`<cstddef>`, `<cstdio>`, `<tuple>` and `<algorithm>`** are included, but
+  only `std::min` and `std::max` are ever used. Circle builds with
+  `-nostdinc++`; raising `STDLIB_SUPPORT` to 3 works but links all of libstdc++
+  and then wants `abort`, `getenv`, `printf` and RTTI. `stdshim/` supplies the
+  four headers instead, and Circle stays at its default level.
+- **`NesPalette` belongs to the platform layer**, not the core. It is in
+  `InfoNES_System_Circle.cpp`.
+
+### The palette is big endian RGB565
+
+Carried over from the pico build, and **that is why this port sets
+`ST7789_SWAP_COLOR_BYTES` to TRUE where circle-arcade sets it FALSE** — that
+project's LMI assets are plain RGB565.
+
+Read as plain RGB565 the palette is wrong in a specific way: red and blue
+exchange, so white stays white while sky blue turns beige. Checked against the
+real 2C02 colours, entry 0x21 comes out (255, 230, 238) read straight and
+(57, 190, 255) read byte swapped, against a true (63, 191, 255).
+
+The pico build masks each entry with 32767. That is dropped here: measured
+against the real palette it roughly doubles the error.
+
+### Video path
+
+The core is scanline based. `InfoNES_PreDrawLine(line)` points its line buffer
+at row `line` of a full 256x240 frame, so the frame accumulates with no copying,
+and `InfoNES_LoadFrame()` hands the whole thing over at once.
+
+That is deliberately simpler than the pico build's ping-ponged scanline DMA,
+which exists because an RP2350 has 264 KB of RAM. A Pi has 512 MB, and
+`ST7789DMADisplay::SetArea` already returns while the frame is still going out,
+so the next frame is emulated during the transfer either way.
+
+**The picture is pillarboxed, not scaled**: 256 wide is 122,880 bytes a frame
+against 153,600, which at 62.5 MHz is 15.7 ms against 19.7. That is the
+difference between clearing 60 fps and not being able to. `NES_OFFSET_X` puts
+it in the middle, leaving 32 px of black either side. Do not reach for the pico
+build's `FULL_SCREEN` stretching here.
+
+`NES_FIRST_SCANLINE=0` and `NES_LAST_SCANLINE=239` are set in the Makefile;
+they are the only two of the pico build's compile definitions that reach
+`InfoNES.cpp` itself.
+
+### Display
+
+ST7789VW, 240x320 native, driven as 320x240 landscape. `ST7789DMADisplay` sends
+frames over DMA rather than the polled writes Circle's own `CST7789Display`
+uses. Three things about Circle's DMA SPI that the headers do not make obvious:
+
+- `StartWriteRead` asserts `nCount <= 0xFFFF`, but a frame is bigger, so it
+  goes out in chunks of 61,440 chained through the completion routine.
+- It also asserts a non-null read buffer. Not waste: with no RX DMA the receive
+  FIFO is never drained and the controller stalls.
+- Chip select is driven by hand so it can stay low across every chunk of one
+  frame; letting the peripheral toggle CE0 would break the RAMWR stream at each
+  chunk boundary.
+
+The panel is mounted upside down; MADCTL `0xB0` turns the picture around in
+hardware at no cost. `ST7789_TEST_PATTERN` in `DisplayConfig.h` draws bars,
+a border and corner markers and stops — the quickest way to separate wiring,
+orientation and colour order from emulator problems.
+
+### Input
+
+The board's buttons on GPIO, sampled once per frame in `CKernel::ReadPad()` and
+handed over by `InfoNES_PadState()`. Active low with internal pull-ups; no
+debounce needed at that rate. X and Y double for A and B, TL and TR for SELECT
+and START.
+
+### Not done yet
+
+- **Sound.** The five `InfoNES_Sound*` functions are stubs. Circle's
+  `CPWMSoundDevice` is the counterpart, and audio is mono on GPIO 18 — the
+  three PWM options in `configure-gamepi20.sh` are what put it there rather
+  than on GPIO 12/13, which are this board's Up and Right buttons.
+- **Frame pacing.** `InfoNES_LoadFrame()` presents and returns, so the emulator
+  runs at whatever rate it manages rather than at 60 Hz.
+- **ROM selection.** `InfoNES_Menu()` returns 0 and `kernel.cpp` loads a fixed
+  `/rom.nes`. `menu.cpp` and `RomLister.cpp` in the pico build are the model,
+  but they are pico-sdk bound.
