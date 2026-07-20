@@ -45,6 +45,8 @@ public:
 	void SoundClose (void);
 	int SoundWrite (const unsigned char *pSamples, int nCount);
 	int SoundBufferAvail (void);
+	// 0 while muted, so nothing downstream has to know about the mute.
+	unsigned GetVolume (void) const	{ return m_bMuted ? 0 : m_nVolume; }
 
 	static CKernel *Get (void)	{ return s_pThis; }
 
@@ -53,6 +55,7 @@ private:
 	void DrawTestPattern (void);
 #endif
 	void InitializeButtons (void);
+	void UpdateVolume (void);
 
 	// do not change this order
 	CActLED			m_ActLED;
@@ -65,8 +68,17 @@ private:
 	CEMMCDevice		m_EMMC;
 	FATFS			m_FileSystem;
 
-	static const unsigned GPIOButtonCount = 12;
+	static const unsigned GPIOButtonCount = 10;
 	CGPIOPin		m_ButtonPins[GPIOButtonCount];
+
+	// The shoulder buttons work the volume rather than the pad.
+	CGPIOPin		m_VolumeDownPin;
+	CGPIOPin		m_VolumeUpPin;
+	boolean			m_bVolumeDownWasDown = FALSE;
+	boolean			m_bVolumeUpWasDown = FALSE;
+	boolean			m_bVolumeChord = FALSE;
+	boolean			m_bMuted = FALSE;
+	unsigned		m_nVolume = VOLUME_DEFAULT;
 
 	// Frame pacing. The deadline is carried forward rather than taken from the
 	// time the last wait ended, so a frame that runs long does not push every

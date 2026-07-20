@@ -35,6 +35,10 @@ void GamePi20_SoundClose (void);
 // dropped rather than waited for, so audio never holds up a frame.
 int GamePi20_SoundWrite (const unsigned char *pSamples, int nCount);
 
+// Current volume as a percentage, worked by the shoulder buttons. 50 is the
+// plain average of the APU channels; above that the mix is amplified.
+unsigned GamePi20_GetVolume (void);
+
 // Room left in the queue, in samples. The APU uses this to decide how much to
 // generate.
 int GamePi20_SoundBufferAvail (void);

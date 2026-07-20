@@ -20,8 +20,18 @@
 #define GPIO_BUTTON_X		22
 #define GPIO_BUTTON_Y		17
 
+// The shoulder buttons work the volume rather than the pad: TL down, TR up,
+// both together to mute and unmute.
 #define GPIO_BUTTON_TL		5
 #define GPIO_BUTTON_TR		6
+
+// Volume as a percentage. 50 is unity - the plain average of the five APU
+// channels that the reference ports use - and is the default. 100 is twice
+// that and will clip the loudest passages. A single NES channel only ever
+// reaches a fifth of full scale, which is why unity is quiet to begin with.
+#define VOLUME_DEFAULT		50
+#define VOLUME_STEP		5
+#define VOLUME_MAX		100
 
 #define GPIO_BUTTON_SELECT	16
 #define GPIO_BUTTON_START	26

@@ -52,10 +52,9 @@ s_ButtonMap[] =
 	{ GPIO_BUTTON_SELECT,	NES_PAD_SELECT	},
 	{ GPIO_BUTTON_START,	NES_PAD_START	},
 	// Spare buttons, doubling for the two above so either pair can be used.
+	// TL and TR are not here: they work the volume instead.
 	{ GPIO_BUTTON_X,	NES_PAD_B	},
-	{ GPIO_BUTTON_Y,	NES_PAD_A	},
-	{ GPIO_BUTTON_TL,	NES_PAD_SELECT	},
-	{ GPIO_BUTTON_TR,	NES_PAD_START	}
+	{ GPIO_BUTTON_Y,	NES_PAD_A	}
 };
 
 CKernel::CKernel (void)
@@ -99,9 +98,18 @@ void CKernel::InitializeButtons (void)
 		m_ButtonPins[i].AssignPin (s_ButtonMap[i].nPin);
 		m_ButtonPins[i].SetMode (GPIOModeInputPullUp);
 	}
+
+	m_VolumeDownPin.AssignPin (GPIO_BUTTON_TL);
+	m_VolumeDownPin.SetMode (GPIOModeInputPullUp);
+	m_VolumeUpPin.AssignPin (GPIO_BUTTON_TR);
+	m_VolumeUpPin.SetMode (GPIOModeInputPullUp);
 }
 
 // The buttons pull their pin to ground, so LOW means pressed.
+//
+// The shoulder buttons are handled here too, on the press rather than while
+// held: this runs once a frame, so a held button would otherwise run the
+// volume from one end to the other in well under a second.
 unsigned CKernel::ReadPad (void)
 {
 	unsigned nPad = 0;
@@ -114,7 +122,54 @@ unsigned CKernel::ReadPad (void)
 		}
 	}
 
+	UpdateVolume ();
+
 	return nPad;
+}
+
+// TL turns the volume down, TR up, both together mute and unmute.
+//
+// A step is taken when a button is *released*, not when it is pressed. Pressing
+// two buttons together never quite happens at the same moment, so acting on the
+// press would step the volume for whichever one arrived first, every time the
+// mute chord was used. Waiting for the release means the chord can be spotted
+// first and the step suppressed.
+void CKernel::UpdateVolume (void)
+{
+	boolean bDown = m_VolumeDownPin.Read () == LOW;
+	boolean bUp = m_VolumeUpPin.Read () == LOW;
+
+	if (bDown && bUp)
+	{
+		if (!m_bVolumeChord)
+		{
+			m_bVolumeChord = TRUE;
+			m_bMuted = !m_bMuted;
+		}
+	}
+	else if (!bDown && !bUp)
+	{
+		if (m_bVolumeChord)
+		{
+			// Both let go after a mute: the presses have been used up.
+			m_bVolumeChord = FALSE;
+		}
+		else if (m_bVolumeDownWasDown)
+		{
+			m_nVolume = m_nVolume > VOLUME_STEP ? m_nVolume - VOLUME_STEP : 0;
+		}
+		else if (m_bVolumeUpWasDown)
+		{
+			m_nVolume += VOLUME_STEP;
+			if (m_nVolume > VOLUME_MAX)
+			{
+				m_nVolume = VOLUME_MAX;
+			}
+		}
+	}
+
+	m_bVolumeDownWasDown = bDown;
+	m_bVolumeUpWasDown = bUp;
 }
 
 // Hand the 256x240 picture to the panel, centred in its 320x240. SetArea starts
@@ -411,6 +466,14 @@ int GamePi20_SoundWrite (const unsigned char *pSamples, int nCount)
 	assert (pKernel != 0);
 
 	return pKernel->SoundWrite (pSamples, nCount);
+}
+
+unsigned GamePi20_GetVolume (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->GetVolume ();
 }
 
 int GamePi20_SoundBufferAvail (void)

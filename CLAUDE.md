@@ -365,7 +365,7 @@ and is the only place any of this lives.
 | Y | 17 | A |
 | Up / Down / Left / Right | 12 / 20 / 21 / 13 | D-pad |
 | SELECT / START | 16 / 26 | Select / Start |
-| TL / TR | 5 / 6 | Select / Start |
+| TL / TR | 5 / 6 | volume, not the pad — see below |
 
 **A and B are crossed on purpose.** The board's silkscreen does not follow the
 convention NES games expect, where A is the primary action and falls under the
@@ -373,8 +373,19 @@ thumb on the right; mapped literally it plays wrong. Swapping the two lines
 back gives the literal mapping.
 
 X and Y are not spare in any useful sense — they duplicate A and B. If
-something better comes up (a reset combo, a frame rate overlay) they are the
+something better comes up (a reset combo, an on-screen indicator) they are the
 buttons to take.
+
+**TL and TR work the volume**, not the pad: TL down, TR up, both together to
+mute and unmute. Nothing is lost by taking them, as SELECT and START both have
+buttons of their own.
+
+A step is taken when a button is **released**, not pressed. Two buttons are
+never pressed at quite the same moment, so acting on the press would step the
+volume for whichever arrived first every single time the mute chord was used.
+Waiting for the release lets the chord be recognised first and the step
+suppressed. The cost is that the change lands on the release, which nobody can
+perceive for a volume control and would be wrong for anything twitchy.
 
 ### Sound
 
@@ -382,6 +393,13 @@ PWM on GPIO 18, mono, 22050 Hz (`pAPU_QUALITY` is 2 in `InfoNES_pAPU.h`). The
 APU produces 8 bit unsigned, which Circle takes directly as
 `SoundFormatUnsigned8`, so nothing is converted. The five channels - two pulse,
 triangle, noise, DPCM - are averaged, as the reference ports do.
+
+Volume is a percentage applied while mixing: the channels are summed and
+scaled by `volume / 250`, so **50 is unity** — the plain average the reference
+ports use — and is the default. 100 is twice that and clips the loudest
+passages. A single NES channel only reaches a fifth of full scale, which is why
+unity is quiet to begin with. Muting is separate state, so the level survives
+it; `GetVolume()` returns 0 while muted and nothing downstream knows.
 
 `CPWMSoundBaseDevice` with the queue API: `AllocateQueue`, `SetWriteFormat`,
 `Start`, then `Write` per frame. 100 ms of queue. Anything that does not fit is
@@ -420,9 +438,6 @@ sprinting through the frames after it, which looks worse than one late frame.
 
 ### Not done yet
 
-- **Volume.** The five APU channels are averaged, as the reference ports do,
-  so one channel plays at a fifth of full scale. Summing with a smaller divisor
-  and clamping would be louder, at the risk of clipping.
 - **ROM selection.** `InfoNES_Menu()` returns 0 and `kernel.cpp` loads a fixed
   `/rom.nes`. `menu.cpp` and `RomLister.cpp` in the pico build are the model,
   but they are pico-sdk bound.

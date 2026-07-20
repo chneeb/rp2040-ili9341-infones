@@ -240,9 +240,14 @@ void InfoNES_SoundClose (void)
 void InfoNES_SoundOutput (int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3,
 			  BYTE *wave4, BYTE *wave5)
 {
-	// Averaging the five channels is what the reference ports do
-	// (linux/InfoNES_System_Linux.cpp). It cannot clip, at the cost of each
-	// channel being a fifth of full scale.
+	// The five channels are summed rather than averaged, and then scaled by
+	// the volume. A divisor of 250 puts unity at volume 50, which is the plain
+	// average the reference ports use (linux/InfoNES_System_Linux.cpp) - quiet,
+	// because a single channel only ever reaches a fifth of full scale. Above
+	// that the mix is amplified and has to be clamped, which is the trade the
+	// volume control exists to let you make.
+	unsigned nVolume = GamePi20_GetVolume ();
+
 	int nDone = 0;
 
 	while (nDone < samples)
@@ -257,8 +262,10 @@ void InfoNES_SoundOutput (int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3,
 		{
 			int j = nDone + i;
 
-			s_MixBuffer[i] = (BYTE) ((  wave1[j] + wave2[j] + wave3[j]
-						  + wave4[j] + wave5[j]) / 5);
+			int nSum = wave1[j] + wave2[j] + wave3[j] + wave4[j] + wave5[j];
+			int nValue = (int) ((nSum * nVolume) / 250);
+
+			s_MixBuffer[i] = (BYTE) (nValue > 255 ? 255 : nValue);
 		}
 
 		GamePi20_SoundWrite (s_MixBuffer, nChunk);
