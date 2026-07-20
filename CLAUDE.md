@@ -496,42 +496,41 @@ Presses are edge-detected against a snapshot taken when the menu opens: at
 60 Hz a held button runs through the list in well under a second, and the quit
 chord means SELECT and START are usually still down on the way in.
 
-### Open: a chug under the audio
+### Underruns must pad with the level we output
 
-`SOUND_ENABLED` in `InputConfig.h` is **0**. Turning it on gives correct music
-with a steady low chugging underneath it.
+The mix is offset so that **silence is 128, not 0**:
 
-What is known:
+```c
+int nValue = 128 + (nSum * nVolume) / 500;
+```
 
-- The music itself is right - melodies are clear, so the queue is fed and the
-  mixing is sound.
-- **Muting does not remove the chug.** Mute drives every sample to 0, a constant
-  DC level with no alternating component, so the noise is not coming from the
-  sample data.
-- It starts when a ROM loads, which is when `InfoNES_SoundOpen()` first drives
-  GPIO 18 as PWM. Before that the amplifier input sees nothing.
-- The core clock is pinned (`core_freq`/`core_freq_min` in config.txt) and the
-  menu reports `core 250  spi 62`, so the bus is where it is meant to be.
-- Nothing in the sound path changed between the last build where it was good
-  and the first where it was not - the two commits in between are the ROM menu
-  and the full width flag, and neither touches mixing, the queue, `APU_Mute` or
-  the volume maths.
+This is not cosmetic. The APU's silence is 0, which is 0% PWM duty - the bottom
+rail. Circle pads an underrun with its null frame, and for PWM that is half
+scale (`CSoundBaseDevice` fills it with `m_nRangeMax / 2`, and the hardware
+format is `SoundFormatUnsigned32` with range 0..m_nRange-1). With silence at 0,
+every underrun stepped the output half of full scale and back - a click, sixty
+times a second, heard as a steady chug under otherwise correct music.
 
-The working theory is that the display's SPI bursts couple into the audio path:
-15.7 ms of transfer every 16.6 ms is a hard 60 Hz switching pattern, and that
-would be additive, mute-proof, and inaudible until the PWM pin is driven.
+Two things about that symptom are worth remembering, because they misdirect:
 
-`SKIP_DISPLAY` in `DisplayConfig.h` was added to test exactly this - it runs the
-emulator and its sound but never sends a frame, so the picture freezes and only
-the audio continues. **That test has not been run yet**, and it is the thing to
-do first when picking this up again: if the chug goes with the display, it is
-electrical and the remedies are a lower SPI clock or living with it; if it does
-not, the display is exonerated and the fault is in the sound path after all.
+- **Muting made it no better.** Muting drives the samples to 0, the value
+  *furthest* from the null frame, so it made each step larger. That ruled out
+  the sample data as the source and sent the search towards electrical coupling
+  from the display's SPI bursts, which was wrong.
+- **circle-arcade does not have the problem**, with the same board, the same
+  GPIO 18 and the same three PWM options. It uses `CPWMSoundDevice` for one-shot
+  buffers, so it is never streaming and never underruns. The difference is the
+  class, not the configuration - which is what finally pointed at the null
+  frame.
 
-One flow change from the ROM menu commit is worth a look too, as the only
-software candidate found so far: `InfoNES_Init()` used to run *after* the APU
-was set up (`Run()` called `InfoNES_Init`, `InfoNES_Load`, then `InfoNES_Main`,
-which calls `InfoNES_Init` again) and now runs before it.
+Centring costs half the dynamic range; the divisor of 500 rather than 250 keeps
+volume 50 at the level the reference ports produce, and the volume control makes
+the rest back. Muting is now genuinely silent, since 128 is exactly the null
+level.
+
+`SKIP_DISPLAY` in `DisplayConfig.h` remains from that search: it runs the
+emulator and its sound but never sends a frame, which separates anything
+audible into "follows the display" and "does not".
 
 ### Not done yet
 

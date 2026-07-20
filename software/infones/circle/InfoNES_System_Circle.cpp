@@ -307,12 +307,21 @@ void InfoNES_SoundClose (void)
 void InfoNES_SoundOutput (int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3,
 			  BYTE *wave4, BYTE *wave5)
 {
-	// The five channels are summed rather than averaged, and then scaled by
-	// the volume. A divisor of 250 puts unity at volume 50, which is the plain
-	// average the reference ports use (linux/InfoNES_System_Linux.cpp) - quiet,
-	// because a single channel only ever reaches a fifth of full scale. Above
-	// that the mix is amplified and has to be clamped, which is the trade the
-	// volume control exists to let you make.
+	// The five channels are summed, scaled by the volume, and offset so that
+	// silence sits at mid scale rather than at zero.
+	//
+	// The offset is the important part. The APU's idea of silence is 0, which
+	// is 0% PWM duty - the bottom rail. Circle pads an underrun with its null
+	// frame, which for PWM is half scale (CSoundBaseDevice fills it with
+	// m_nRangeMax / 2). With silence at 0 every underrun steps the output by
+	// half of full scale and back, which is a loud click; sixty times a second
+	// that is a steady chug under the music. It is also immune to muting -
+	// muting drives the samples to 0, the value furthest from the null frame,
+	// so it makes each step larger rather than smaller.
+	//
+	// Centring on 128 costs half the dynamic range, which the volume control
+	// can make back, and makes an underrun inaudible instead of a click.
+	// A divisor of 500 keeps volume 50 at the range the reference ports use.
 	unsigned nVolume = GamePi20_GetVolume ();
 
 	int nDone = 0;
@@ -330,7 +339,7 @@ void InfoNES_SoundOutput (int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3,
 			int j = nDone + i;
 
 			int nSum = wave1[j] + wave2[j] + wave3[j] + wave4[j] + wave5[j];
-			int nValue = (int) ((nSum * nVolume) / 250);
+			int nValue = 128 + (int) ((nSum * nVolume) / 500);
 
 			s_MixBuffer[i] = (BYTE) (nValue > 255 ? 255 : nValue);
 		}
