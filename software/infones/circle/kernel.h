@@ -49,6 +49,11 @@ public:
 	// that divisor once and never revisits it, so this is what the current
 	// bus rate has to be worked out against.
 	unsigned GetCoreClockAtInit (void) const	{ return m_nCoreClockAtInit; }
+	// Frames per second actually achieved, measured over the last second of
+	// play. 0 until a second has been measured.
+	// Snapshotted when the menu opens, so it reports the game just played
+	// rather than the menu's own loop, which is paced by the same code.
+	unsigned GetMeasuredFPS (void) const	{ return m_nLastGameFPS; }
 	int SoundOpen (int nSampleRate);
 	void SoundClose (void);
 	int SoundWrite (const unsigned char *pSamples, int nCount);
@@ -96,6 +101,10 @@ private:
 	// later frame back with it.
 	u64 m_nNextFrameTime = 0;
 	unsigned m_nCoreClockAtInit = 0;
+	u64 m_nSecondStarted = 0;
+	unsigned m_nFramesThisSecond = 0;
+	unsigned m_nMeasuredFPS = 0;
+	unsigned m_nLastGameFPS = 0;
 
 	// Created once the emulator says what rate it wants.
 	CPWMSoundBaseDevice *m_pSound = 0;

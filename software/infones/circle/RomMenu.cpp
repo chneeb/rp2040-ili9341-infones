@@ -163,19 +163,21 @@ void CRomMenu::Draw (void)
 
 	CString Info;
 #if !SOUND_ENABLED
-	Info.Format ("core %u  spi %u  %upx  sound off",
-		     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH);
+	Info.Format ("core %u  spi %u  %upx  %ufps  sound off",
+		     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH,
+		     GamePi20_GetMeasuredFPS ());
 #else
 	if (GamePi20_IsMuted ())
 	{
-		Info.Format ("core %u  spi %u  %upx  muted",
-			     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH);
+		Info.Format ("core %u  spi %u  %upx  %ufps  muted",
+			     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH,
+			     GamePi20_GetMeasuredFPS ());
 	}
 	else
 	{
-		Info.Format ("core %u  spi %u  %upx  vol %u",
+		Info.Format ("core %u  spi %u  %upx  %ufps  vol %u",
 			     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH,
-			     GamePi20_GetVolumeLevel ());
+			     GamePi20_GetMeasuredFPS (), GamePi20_GetVolumeLevel ());
 	}
 #endif
 

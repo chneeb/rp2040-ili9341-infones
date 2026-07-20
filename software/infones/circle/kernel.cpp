@@ -229,6 +229,21 @@ void CKernel::WaitForNextFrame (void)
 		m_nNextFrameTime = nNow;
 	}
 
+	// Count what is actually achieved. The pacing above should give 60, and if
+	// it does not this is the number that says so.
+	m_nFramesThisSecond++;
+
+	nNow = CTimer::GetClockTicks64 ();
+	if (m_nSecondStarted == 0)
+	{
+		m_nSecondStarted = nNow;
+	}
+	else if (nNow - m_nSecondStarted >= 1000000)
+	{
+		m_nMeasuredFPS = m_nFramesThisSecond;
+		m_nFramesThisSecond = 0;
+		m_nSecondStarted = nNow;
+	}
 }
 
 //
@@ -494,6 +509,10 @@ const char *CKernel::ChooseRom (void)
 		return nullptr;
 	}
 
+	// Freeze what the game managed, before the menu's own paced loop overwrites
+	// the running measurement.
+	m_nLastGameFPS = m_nMeasuredFPS;
+
 	return m_pMenu->Run (GamePi20_ReadPad, GamePi20_WaitForNextFrame);
 }
 
@@ -511,6 +530,14 @@ unsigned GamePi20_GetVolume (void)
 	assert (pKernel != 0);
 
 	return pKernel->GetVolume ();
+}
+
+unsigned GamePi20_GetMeasuredFPS (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->GetMeasuredFPS ();
 }
 
 unsigned GamePi20_GetCoreClockAtInit (void)

@@ -473,6 +473,14 @@ Circle half is fine and the emulator is not feeding it.
 
 ### Frame pacing
 
+The menu's status line reports the frame rate the **last game** achieved,
+snapshotted when the menu opens - the menu is paced by the same code, so a live
+reading would just measure the menu. Expect 60 or 61: the target is 60.0988 Hz
+and counting whole frames in a one second window lands either side of it.
+
+InfoNES has no PAL support at all, so the target is always NTSC. A PAL ROM will
+genuinely run about 20% fast, and that is the emulator, not the pacing.
+
 `InfoNES_LoadFrame()` presents and then waits, in that order - the frame is
 going out over DMA during the wait, so the transfer costs nothing extra while
 it fits in the period.

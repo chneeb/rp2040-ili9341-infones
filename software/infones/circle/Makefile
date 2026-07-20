@@ -42,6 +42,10 @@ LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
 
 INCLUDE	+= -I . -I stdshim -I $(INFONES)
 
+# An undefined name in #if is silently 0, which once left the scaling compiled
+# out while a 320 wide window was still being set. Make that a warning.
+DEFINE	+= -Wundef
+
 include $(CIRCLEHOME)/app/Rules.mk
 
 -include $(DEPS)

@@ -50,6 +50,9 @@ unsigned GamePi20_GetVolume (void);
 
 // The level as set, and whether it is muted - what the menu shows, as opposed
 // to the effective volume above, which is 0 while muted.
+// Frames per second actually achieved, measured over the last second of play.
+unsigned GamePi20_GetMeasuredFPS (void);
+
 // The core clock as measured when the SPI divisor was fixed.
 unsigned GamePi20_GetCoreClockAtInit (void);
 
