@@ -1,0 +1,3 @@
+# Objects from the Circle build, which compiles the shared sources in place.
+*.o
+*.d
