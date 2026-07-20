@@ -354,8 +354,27 @@ orientation and colour order from emulator problems.
 
 The board's buttons on GPIO, sampled once per frame in `CKernel::ReadPad()` and
 handed over by `InfoNES_PadState()`. Active low with internal pull-ups; no
-debounce needed at that rate. X and Y double for A and B, TL and TR for SELECT
-and START.
+debounce needed at that rate. The map is the table at the top of `kernel.cpp`
+and is the only place any of this lives.
+
+| Board button | BCM | NES |
+|---|---|---|
+| A | 23 | **B** |
+| B | 4 | **A** |
+| X | 22 | B |
+| Y | 17 | A |
+| Up / Down / Left / Right | 12 / 20 / 21 / 13 | D-pad |
+| SELECT / START | 16 / 26 | Select / Start |
+| TL / TR | 5 / 6 | Select / Start |
+
+**A and B are crossed on purpose.** The board's silkscreen does not follow the
+convention NES games expect, where A is the primary action and falls under the
+thumb on the right; mapped literally it plays wrong. Swapping the two lines
+back gives the literal mapping.
+
+X and Y are not spare in any useful sense — they duplicate A and B. If
+something better comes up (a reset combo, a frame rate overlay) they are the
+buttons to take.
 
 ### Not done yet
 

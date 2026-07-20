@@ -42,13 +42,17 @@ s_ButtonMap[] =
 	{ GPIO_BUTTON_DOWN,	NES_PAD_DOWN	},
 	{ GPIO_BUTTON_LEFT,	NES_PAD_LEFT	},
 	{ GPIO_BUTTON_RIGHT,	NES_PAD_RIGHT	},
-	{ GPIO_BUTTON_A,	NES_PAD_A	},
-	{ GPIO_BUTTON_B,	NES_PAD_B	},
+	// Crossed over on purpose: the board's silkscreen does not follow the
+	// convention NES games expect, where A is the primary action and sits
+	// under the thumb on the right. Swap these two lines back for a literal
+	// A-to-A mapping.
+	{ GPIO_BUTTON_A,	NES_PAD_B	},
+	{ GPIO_BUTTON_B,	NES_PAD_A	},
 	{ GPIO_BUTTON_SELECT,	NES_PAD_SELECT	},
 	{ GPIO_BUTTON_START,	NES_PAD_START	},
-	// Spare buttons, mapped to the same actions for comfort.
-	{ GPIO_BUTTON_X,	NES_PAD_A	},
-	{ GPIO_BUTTON_Y,	NES_PAD_B	},
+	// Spare buttons, doubling for the two above so either pair can be used.
+	{ GPIO_BUTTON_X,	NES_PAD_B	},
+	{ GPIO_BUTTON_Y,	NES_PAD_A	},
 	{ GPIO_BUTTON_TL,	NES_PAD_SELECT	},
 	{ GPIO_BUTTON_TR,	NES_PAD_START	}
 };
