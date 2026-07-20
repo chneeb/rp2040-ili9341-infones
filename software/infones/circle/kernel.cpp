@@ -5,6 +5,7 @@
 #include "GamePi20.h"
 #include "RomMenu.h"
 #include <circle/util.h>
+#include <circle/machineinfo.h>
 #include <assert.h>
 
 // The emulator's own header. Kept to this one place, and to
@@ -81,6 +82,8 @@ boolean CKernel::Initialize (void)
 {
 	// Interrupts first: the display signals the end of a transfer from an
 	// interrupt, and its own init already uses DMA.
+	m_nCoreClockAtInit = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
+
 	if (!m_Interrupt.Initialize ())	return FALSE;
 	if (!m_Timer.Initialize ())	return FALSE;
 	if (!m_Display.Initialize ())	return FALSE;
@@ -444,6 +447,14 @@ unsigned GamePi20_ReadPad (void)
 	return pKernel->ReadPad ();
 }
 
+int GamePi20_DisplayBusy (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->DisplayBusy () ? 1 : 0;
+}
+
 void GamePi20_WaitForNextFrame (void)
 {
 	CKernel *pKernel = CKernel::Get ();
@@ -500,6 +511,14 @@ unsigned GamePi20_GetVolume (void)
 	assert (pKernel != 0);
 
 	return pKernel->GetVolume ();
+}
+
+unsigned GamePi20_GetCoreClockAtInit (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->GetCoreClockAtInit ();
 }
 
 unsigned GamePi20_GetVolumeLevel (void)

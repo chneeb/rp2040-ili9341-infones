@@ -41,7 +41,24 @@
 // matching core_freq in config.txt.
 //
 // Set to 0 to go back to a pillarboxed 256 with black bars either side.
-#define NES_FILL_WIDTH		0
+#define NES_FILL_WIDTH		1
+
+// Send the picture only every Nth frame. The emulator, its input and its sound
+// still run at the full 60 Hz - this changes how smooth the picture looks, not
+// how fast the game plays.
+//
+// What fits, against the 16.64 ms budget of one frame:
+//
+//   256 px @ 62.5 MHz   15.7 ms   every frame
+//   320 px @ 66.7 MHz   18.4 ms   every second frame
+//   320 px @ 100 MHz    12.3 ms   every frame
+//
+// 100 MHz needs the core pinned at 400 (force_turbo=0 in config.txt; core_freq
+// is ignored on this board). An earlier round concluded 100 and 125 MHz were
+// both unstable, but that was a missing include leaving the scaling compiled
+// out while a 320 wide window was still being set - SetArea then read a 256
+// wide buffer past its end. The clocks were never fairly tested.
+#define DISPLAY_FRAME_SKIP	1
 
 #define NES_WIDTH		256		// what the core renders
 #define NES_HEIGHT		240
@@ -74,12 +91,20 @@
 // Circle divides the *measured* core clock by this and truncates, so the rate
 // that comes out depends on core_freq in config.txt:
 //
-//   core_freq=250 (default)  ->  62.5, 41.7, 31.25 MHz
-//   core_freq=350            ->  87.5, 58.3 MHz
-//   core_freq=400            ->  100, 66.7, 50 MHz
+//   core_freq=250  ->  125, 62.5, 41.7 MHz
+//   core_freq=400  ->  200, 100, 66.7, 50 MHz
 //
-// A full width frame is 153,600 bytes, which needs at least 74 MHz to fit in
-// the 16.64 ms budget, so NES_FILL_WIDTH wants core_freq=350 and 87.5 MHz.
+// A full width frame is 153,600 bytes and needs at least 74 MHz to fit in the
+// 16.64 ms budget, so NES_FILL_WIDTH wants core_freq=400 and 100 MHz.
+//
+// core_freq=350 was tried and the firmware ignored it, with and without
+// force_turbo. 400 is the native turbo rate, so it stands a better chance.
+//
+// **Pin both core_freq and core_freq_min.** The core clock is dynamic - around
+// 250 idle and 400 under load - and Circle measures it once at init, computes
+// the divisor and never looks again. An unpinned core that boosts afterwards
+// silently multiplies the bus rate, which is the likeliest reason 125 MHz once
+// looked intermittent rather than simply too fast.
 //
 // WARNING: asking for 87.5 MHz without setting core_freq does not give 62.5 -
 // it truncates 250/87.5 to a divisor of 2 and runs the bus at 125 MHz. The
@@ -88,11 +113,7 @@
 // All of this is far beyond what the ST7789VW is specified for. If the picture
 // tears, flickers or shows intermittent noise, drop back a step - a marginal
 // clock looks like a wiring fault rather than a clock problem.
-#if NES_FILL_WIDTH
-#define ST7789_CLOCK_SPEED	87500000	// needs core_freq=350
-#else
-#define ST7789_CLOCK_SPEED	62500000	// stock core_freq=250
-#endif
+#define ST7789_CLOCK_SPEED	100000000	// core 400 pinned, gives 400/4
 
 // The GamePi20 has the panel mounted upside down. MY | MV | ML turns the
 // picture around at no cost; 0x70 is the same layout the right way up.

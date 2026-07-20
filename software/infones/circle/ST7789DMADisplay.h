@@ -66,6 +66,9 @@ public:
 	/// \brief Block until the frame being sent has gone out.
 	void WaitForTransfer (void);
 
+	/// \return Is a frame still going out?
+	boolean IsBusy (void) const	{ return m_bTransferActive; }
+
 private:
 	void Command (u8 uchByte);
 	void Data (u8 uchByte);

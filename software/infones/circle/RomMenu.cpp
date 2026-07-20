@@ -148,8 +148,14 @@ void CRomMenu::Draw (void)
 	// core clock and truncates, so the rate that comes out depends on what the
 	// firmware did with core_freq - which is worth being able to read rather
 	// than assume.
+	// The divisor was fixed at init from the core clock as it was then, and
+	// Circle never revisits it. The core clock does move - around 250 idle and
+	// 400 under load - so the bus rate now is the *current* core over that old
+	// divisor, not over a freshly computed one.
 	unsigned nCore = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
-	unsigned nDivisor = nCore / ST7789_CLOCK_SPEED;
+	unsigned nCoreAtInit = GamePi20_GetCoreClockAtInit ();
+
+	unsigned nDivisor = nCoreAtInit / ST7789_CLOCK_SPEED;
 	if (nDivisor == 0)
 	{
 		nDivisor = 1;

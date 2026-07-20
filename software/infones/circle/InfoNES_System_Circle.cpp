@@ -28,6 +28,12 @@
 
 #include "GamePi20.h"
 
+// Not optional: NES_FILL_WIDTH, DISPLAY_FRAME_SKIP and SKIP_DISPLAY are all
+// tested with #if below, and an undefined name evaluates to 0 there silently.
+// Without this the scaling was compiled out while kernel.cpp still set a 320
+// wide window, so SetArea read a 256 wide buffer past its end.
+#include "DisplayConfig.h"
+
 //
 // The NES palette, in the panel's pixel format.
 //
@@ -123,12 +129,29 @@ static void ScaleFrame (void)
 int InfoNES_LoadFrame (void)
 {
 #if !SKIP_DISPLAY
+	// Drop this frame if the previous one is still going out, rather than wait
+	// for the bus. Waiting would stall the emulator and cost the game its
+	// speed and its audio pitch; dropping only costs smoothness.
+	//
+	// This adapts on its own to whatever the bus is actually running at, which
+	// matters because the core clock moves about and Circle fixes the SPI
+	// divisor once at init. A full width frame is 12.3 ms at 100 MHz and goes
+	// out every time; the same frame is 19.7 ms at 62.5 and lands every other
+	// frame. Either way the game runs at the right speed.
+	//
+	// DISPLAY_FRAME_SKIP still applies on top, for forcing a lower rate.
+	static unsigned nFrame = 0;
+	if (++nFrame >= DISPLAY_FRAME_SKIP && !GamePi20_DisplayBusy ())
+	{
+		nFrame = 0;
+
 #if NES_FILL_WIDTH
-	ScaleFrame ();
-	GamePi20_PresentFrame (s_Scaled);
+		ScaleFrame ();
+		GamePi20_PresentFrame (s_Scaled);
 #else
-	GamePi20_PresentFrame (s_Frame);
+		GamePi20_PresentFrame (s_Frame);
 #endif
+	}
 #endif
 
 	// After presenting, not before: the frame is going out over DMA while this

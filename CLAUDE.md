@@ -276,6 +276,10 @@ SD card: `bootcode.bin`, `start.elf`, `fixup.dat` (from `make` in
 `circle/boot`), `config.txt` (a copy of `circle/boot/config32.txt`),
 `cmdline.txt`, `kernel.img`, and the games in a `nes/` directory.
 
+`config.txt` also carries `force_turbo=0`, replacing Circle's `initial_turbo=0`.
+That settles the core clock at 400 MHz, which is what lets the panel run at
+400/4 = 100 MHz. See the display notes for why it is not a hard guarantee.
+
 ### Four things the core needs that it does not advertise
 
 Each of these fails in a way that does not point at its cause:
@@ -321,43 +325,54 @@ which exists because an RP2350 has 264 KB of RAM. A Pi has 512 MB, and
 `ST7789DMADisplay::SetArea` already returns while the frame is still going out,
 so the next frame is emulated during the transfer either way.
 
-#### Why it stays pillarboxed
+#### Full width, and the frame rate it costs
 
-Filling the width would be the more faithful picture, not a distortion: NES
-pixels are not square, and on a 4:3 set 256x240 is displayed as 320x240. The
-scaling is clean too - 256 to 320 is exactly 4:5, so every fourth pixel doubles
-and nothing else shifts. `NES_FILL_WIDTH` in `DisplayConfig.h` implements it,
-with a precomputed source-column table, the same approach nesemu uses
-(`spi_lcd.c`, `scaleX[]`).
+The picture fills the panel: `NES_FILL_WIDTH` is 1. That is the more faithful
+image rather than a stretch - NES pixels are not square, and on a 4:3 set
+256x240 is displayed as 320x240 - and 256 to 320 is exactly 4:5, so every fourth
+pixel doubles and nothing else shifts. The scale uses a precomputed
+source-column table, the same approach as nesemu (`spi_lcd.c`, `scaleX[]`).
 
-It is off because the bandwidth is not there. A full width frame is 153,600
-bytes against 122,880, which is 19.7 ms against 15.7 at 62.5 MHz, and the
-budget is 16.64 ms. Filling the width needs at least 74 MHz sustained.
+It costs bandwidth. Against the 16.64 ms budget of one frame:
 
-Circle divides the **measured** core clock and truncates, so on this board the
-only rates available are 250/2, 250/4 and 250/6 - **125, 62.5 and 41.7 MHz**,
-with nothing in between:
+| | frame time | |
+|---|---|---|
+| 256 px @ 62.5 MHz | 15.7 ms | every frame |
+| 320 px @ 66.7 MHz | 18.4 ms | every second frame |
+| 320 px @ 100 MHz | 12.3 ms | every frame |
 
-- 62.5 MHz fits the panel but not the frame: games run about 15% slow, with the
-  audio pitch to match.
-- 125 MHz is enough bandwidth and the menu renders on it perfectly, but it is
-  marginal - a game garbles after a while. Note this means a clean menu is not
-  evidence of a sound clock; only sustained play is.
-- Raising the core clock was tried and **the firmware ignores `core_freq` on
-  this board**, with or without `force_turbo=1`. It stayed at 250 both times,
-  which is worth knowing before trying again: the menu's status line reports
-  the measured core clock and the resulting SPI rate, so this is one boot to
-  check rather than a guess.
+**The display rate looks after itself.** `InfoNES_LoadFrame()` drops a frame if
+the previous one is still going out, rather than waiting for the bus. Waiting
+would stall the emulator and cost the game its speed and its audio pitch;
+dropping only costs smoothness. So the picture runs as fast as the bus allows
+and the game always runs at the right speed.
 
-Asking for a rate the core cannot divide evenly is actively dangerous rather
-than a graceful fallback: 87.5 MHz on a 250 MHz core truncates to a divisor of
-2 and runs the bus at 125.
+That matters because **the core clock will not stay put**. It is roughly 250 MHz
+idle and 400 under load, and Circle measures it once at init, computes the SPI
+divisor and never looks again - so the real bus rate moves with the core, and
+the same card can boot onto a different rate from one power-up to the next.
+`force_turbo=0` in config.txt settles it at 400 most of the time but is not a
+hard guarantee; it still drops to 250 occasionally. `core_freq` is simply
+ignored on this board - 250 and 350 were both tried, with and without
+`force_turbo`, and neither had any effect.
 
-**The picture is pillarboxed, not scaled**: 256 wide is 122,880 bytes a frame
-against 153,600, which at 62.5 MHz is 15.7 ms against 19.7. That is the
-difference between clearing 60 fps and not being able to. `NES_OFFSET_X` puts
-it in the middle, leaving 32 px of black either side. Do not reach for the pico
-build's `FULL_SCREEN` stretching here.
+The menu's status line reports the current core clock and the bus rate it
+implies **using the divisor fixed at init**, which is the only honest way to
+show it. An earlier version recomputed the divisor from the current core clock
+and so reported a rate the hardware was not running at.
+
+##### The bug that made all of this look like a clock problem
+
+`InfoNES_System_Circle.cpp` did not include `DisplayConfig.h`, so
+`NES_FILL_WIDTH` was undefined there - and an undefined name in `#if` is
+silently 0. The scaling was compiled out and the 256 wide buffer was sent, while
+`kernel.cpp`, which does include the config, set a 320 wide window. `SetArea`
+then read 153,600 bytes out of a 122,880 byte buffer, past its end and with
+every row offset by 64 pixels.
+
+That garbling was blamed on the SPI clock, and 87.5, 100 and 125 MHz were each
+condemned on the strength of it. Once the include was added, 100 MHz ran fine.
+**`-Wundef` would have caught this** and is worth adding to the build.
 
 `NES_FIRST_SCANLINE=0` and `NES_LAST_SCANLINE=239` are set in the Makefile;
 they are the only two of the pico build's compile definitions that reach
@@ -488,9 +503,10 @@ new one and resets - is all the teardown a game change needs. An earlier
 version drove this from `CKernel::Run()` instead, which meant quitting would
 have restarted the same ROM.
 
-The menu blacks out the whole panel before returning. The emulator only writes
-the 256 wide strip in the middle, so otherwise the menu's background would stay
-in the pillarbox bars for the whole game.
+The menu blacks out the whole panel before returning. That matters when
+`NES_FILL_WIDTH` is 0 and the emulator only writes the 256 wide strip in the
+middle - the menu's background would otherwise stay in the bars either side for
+the whole game.
 
 Presses are edge-detected against a snapshot taken when the menu opens: at
 60 Hz a held button runs through the list in well under a second, and the quit

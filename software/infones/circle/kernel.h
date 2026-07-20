@@ -41,9 +41,14 @@ public:
 
 	// Reached from the InfoNES platform layer through GamePi20.h.
 	void PresentFrame (const u16 *pFrame);
+	boolean DisplayBusy (void) const	{ return m_Display.IsBusy (); }
 	unsigned ReadPad (void);
 	void WaitForNextFrame (void);
 	const char *ChooseRom (void);
+	// The core clock as it was when the SPI divisor was fixed. Circle sets
+	// that divisor once and never revisits it, so this is what the current
+	// bus rate has to be worked out against.
+	unsigned GetCoreClockAtInit (void) const	{ return m_nCoreClockAtInit; }
 	int SoundOpen (int nSampleRate);
 	void SoundClose (void);
 	int SoundWrite (const unsigned char *pSamples, int nCount);
@@ -90,6 +95,7 @@ private:
 	// time the last wait ended, so a frame that runs long does not push every
 	// later frame back with it.
 	u64 m_nNextFrameTime = 0;
+	unsigned m_nCoreClockAtInit = 0;
 
 	// Created once the emulator says what rate it wants.
 	CPWMSoundBaseDevice *m_pSound = 0;

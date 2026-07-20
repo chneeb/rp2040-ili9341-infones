@@ -25,6 +25,11 @@ unsigned GamePi20_ReadPad (void);
 // null if there is nothing to play.
 const char *GamePi20_ChooseRom (void);
 
+// Is the previous frame still going out over SPI? Used to drop a frame rather
+// than wait for the bus, so the game keeps its speed whatever the bus rate
+// turns out to be.
+int GamePi20_DisplayBusy (void);
+
 // Block until the next frame is due. Called once per frame, after the picture
 // has been handed over, so the transfer runs during the wait.
 void GamePi20_WaitForNextFrame (void);
@@ -45,6 +50,9 @@ unsigned GamePi20_GetVolume (void);
 
 // The level as set, and whether it is muted - what the menu shows, as opposed
 // to the effective volume above, which is 0 while muted.
+// The core clock as measured when the SPI divisor was fixed.
+unsigned GamePi20_GetCoreClockAtInit (void);
+
 unsigned GamePi20_GetVolumeLevel (void);
 int GamePi20_IsMuted (void);
 
