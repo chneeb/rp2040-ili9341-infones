@@ -50,6 +50,9 @@ public:
 	int SoundBufferAvail (void);
 	// 0 while muted, so nothing downstream has to know about the mute.
 	unsigned GetVolume (void) const	{ return m_bMuted ? 0 : m_nVolume; }
+	// The level as set, whether or not it is currently muted.
+	unsigned GetVolumeLevel (void) const	{ return m_nVolume; }
+	boolean IsMuted (void) const		{ return m_bMuted; }
 
 	static CKernel *Get (void)	{ return s_pThis; }
 

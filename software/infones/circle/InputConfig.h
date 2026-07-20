@@ -25,6 +25,17 @@
 #define GPIO_BUTTON_TL		5
 #define GPIO_BUTTON_TR		6
 
+// Set to 0 to leave the sound device unopened altogether. InfoNES_SoundOpen()
+// then fails, APU_Mute stays set, and the APU does no work at all - so this
+// also frees the CPU time the mixing took, and leaves GPIO 18 undriven.
+//
+// Off for now: with sound running there is a steady low chugging under the
+// music that mute does not remove, which points at the display's SPI bursts
+// coupling into the audio path rather than at anything in the samples. See
+// CLAUDE.md; kernel-no-display was built to test that and the question is
+// still open.
+#define SOUND_ENABLED		0
+
 // Volume as a percentage. 50 is unity - the plain average of the five APU
 // channels that the reference ports use - and is the default. 100 is twice
 // that and will clip the loudest passages. A single NES channel only ever

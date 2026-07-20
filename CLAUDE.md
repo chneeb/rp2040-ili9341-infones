@@ -496,6 +496,43 @@ Presses are edge-detected against a snapshot taken when the menu opens: at
 60 Hz a held button runs through the list in well under a second, and the quit
 chord means SELECT and START are usually still down on the way in.
 
+### Open: a chug under the audio
+
+`SOUND_ENABLED` in `InputConfig.h` is **0**. Turning it on gives correct music
+with a steady low chugging underneath it.
+
+What is known:
+
+- The music itself is right - melodies are clear, so the queue is fed and the
+  mixing is sound.
+- **Muting does not remove the chug.** Mute drives every sample to 0, a constant
+  DC level with no alternating component, so the noise is not coming from the
+  sample data.
+- It starts when a ROM loads, which is when `InfoNES_SoundOpen()` first drives
+  GPIO 18 as PWM. Before that the amplifier input sees nothing.
+- The core clock is pinned (`core_freq`/`core_freq_min` in config.txt) and the
+  menu reports `core 250  spi 62`, so the bus is where it is meant to be.
+- Nothing in the sound path changed between the last build where it was good
+  and the first where it was not - the two commits in between are the ROM menu
+  and the full width flag, and neither touches mixing, the queue, `APU_Mute` or
+  the volume maths.
+
+The working theory is that the display's SPI bursts couple into the audio path:
+15.7 ms of transfer every 16.6 ms is a hard 60 Hz switching pattern, and that
+would be additive, mute-proof, and inaudible until the PWM pin is driven.
+
+`SKIP_DISPLAY` in `DisplayConfig.h` was added to test exactly this - it runs the
+emulator and its sound but never sends a frame, so the picture freezes and only
+the audio continues. **That test has not been run yet**, and it is the thing to
+do first when picking this up again: if the chug goes with the display, it is
+electrical and the remedies are a lower SPI clock or living with it; if it does
+not, the display is exonerated and the fault is in the sound path after all.
+
+One flow change from the ROM menu commit is worth a look too, as the only
+software candidate found so far: `InfoNES_Init()` used to run *after* the APU
+was set up (`Run()` called `InfoNES_Init`, `InfoNES_Load`, then `InfoNES_Main`,
+which calls `InfoNES_Init` again) and now runs before it.
+
 ### Not done yet
 
 - Nothing outstanding. Possible next steps: save states, an on-screen volume

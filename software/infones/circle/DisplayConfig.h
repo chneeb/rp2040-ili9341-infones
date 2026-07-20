@@ -16,6 +16,13 @@
 // and colour order apart before any emulator code is involved.
 #define ST7789_TEST_PATTERN	0
 
+// Diagnostic: run the emulator and its sound, but never send a frame to the
+// panel. If a background noise in the audio disappears with this set, the
+// noise is the display's SPI bursts coupling into the audio path rather than
+// anything in the sample data - the picture simply freezes on whatever was
+// last drawn.
+#define SKIP_DISPLAY		0
+
 // The panel is a 240x320 ST7789VW driven in landscape. MADCTL's MV bit swaps X
 // and Y, so it presents as 320x240, and being a true 240x320 part it needs no
 // GRAM offset - unlike the common 240x240 variant, which wants 80 rows.

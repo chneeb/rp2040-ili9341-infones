@@ -4,6 +4,7 @@
 #include "RomMenu.h"
 #include "InputConfig.h"
 #include "DisplayConfig.h"
+#include "GamePi20.h"
 
 #include <circle/util.h>
 #include <fatfs/ff.h>
@@ -155,8 +156,22 @@ void CRomMenu::Draw (void)
 	}
 
 	CString Info;
-	Info.Format ("core %u MHz   spi %u MHz   %u px",
+#if !SOUND_ENABLED
+	Info.Format ("core %u  spi %u  %upx  sound off",
 		     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH);
+#else
+	if (GamePi20_IsMuted ())
+	{
+		Info.Format ("core %u  spi %u  %upx  muted",
+			     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH);
+	}
+	else
+	{
+		Info.Format ("core %u  spi %u  %upx  vol %u",
+			     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH,
+			     GamePi20_GetVolumeLevel ());
+	}
+#endif
 
 	m_Graphics.DrawText (nWidth / 2, nHeight - FOOTER_HEIGHT, COLOUR_TEXT, Info,
 			     C2DGraphics::AlignCenter);
@@ -187,11 +202,23 @@ const char *CRomMenu::Run (unsigned (*pReadPad) (void), void (*pWaitFrame) (void
 	{
 		Draw ();
 
+		// The status line shows these, so a change has to force a redraw:
+		// the inner loop otherwise only redraws when the selection moves.
+		unsigned nShownVolume = GamePi20_GetVolumeLevel ();
+		int nShownMute = GamePi20_IsMuted ();
+
 		for (;;)
 		{
 			pWaitFrame ();
 
 			unsigned nPad = pReadPad ();
+
+			if (   GamePi20_GetVolumeLevel () != nShownVolume
+			    || GamePi20_IsMuted () != nShownMute)
+			{
+				nPrevPad = nPad;
+				break;
+			}
 			unsigned nPressed = nPad & ~nPrevPad;
 			nPrevPad = nPad;
 

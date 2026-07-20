@@ -122,11 +122,13 @@ static void ScaleFrame (void)
 
 int InfoNES_LoadFrame (void)
 {
+#if !SKIP_DISPLAY
 #if NES_FILL_WIDTH
 	ScaleFrame ();
 	GamePi20_PresentFrame (s_Scaled);
 #else
 	GamePi20_PresentFrame (s_Frame);
+#endif
 #endif
 
 	// After presenting, not before: the frame is going out over DMA while this

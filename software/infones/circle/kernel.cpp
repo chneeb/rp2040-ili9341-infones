@@ -243,6 +243,10 @@ void CKernel::WaitForNextFrame (void)
 
 int CKernel::SoundOpen (int nSampleRate)
 {
+#if !SOUND_ENABLED
+	return -1;
+#endif
+
 	if (m_pSound != 0)
 	{
 		return 0;
@@ -496,6 +500,22 @@ unsigned GamePi20_GetVolume (void)
 	assert (pKernel != 0);
 
 	return pKernel->GetVolume ();
+}
+
+unsigned GamePi20_GetVolumeLevel (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->GetVolumeLevel ();
+}
+
+int GamePi20_IsMuted (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->IsMuted () ? 1 : 0;
 }
 
 int GamePi20_SoundBufferAvail (void)

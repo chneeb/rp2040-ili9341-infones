@@ -43,6 +43,11 @@ int GamePi20_SoundWrite (const unsigned char *pSamples, int nCount);
 // plain average of the APU channels; above that the mix is amplified.
 unsigned GamePi20_GetVolume (void);
 
+// The level as set, and whether it is muted - what the menu shows, as opposed
+// to the effective volume above, which is 0 while muted.
+unsigned GamePi20_GetVolumeLevel (void);
+int GamePi20_IsMuted (void);
+
 // Room left in the queue, in samples. The APU uses this to decide how much to
 // generate.
 int GamePi20_SoundBufferAvail (void);
