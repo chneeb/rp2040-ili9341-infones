@@ -58,5 +58,7 @@
 // picture around at no cost; 0x70 is the same layout the right way up.
 #define ST7789_MADCTL		0xB0
 
-// FALSE selects the RGB565 colour model rather than RGB565_BE.
-#define ST7789_SWAP_COLOR_BYTES	FALSE
+// TRUE selects the RGB565_BE colour model. The NES palette carried over from
+// the pico build is big endian RGB565; circle-arcade needs FALSE instead,
+// because its LMI assets are plain RGB565.
+#define ST7789_SWAP_COLOR_BYTES	TRUE

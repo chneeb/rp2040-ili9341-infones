@@ -31,14 +31,16 @@
 //
 // The NES palette, in the panel's pixel format.
 //
-// Carried over verbatim from the pico build (main.cpp), including its
-// CC(x) = x & 32767 masking. Note the pico build drives its panel with byte
-// swapped colours, so if the emulator's colours come out wrong while the test
-// pattern is right, ST7789_SWAP_COLOR_BYTES is the first thing to try - this
-// table and the LMI assets of the circle-arcade port are not necessarily in
-// the same byte order.
+// The values are from the pico build (main.cpp) and are big endian RGB565,
+// which is why ST7789_SWAP_COLOR_BYTES is TRUE for this port and FALSE for
+// circle-arcade, whose LMI assets are plain RGB565.
 //
-#define CC(x)	((WORD) ((x) & 32767))
+// The pico build masks each entry with 32767. That is dropped here: checked
+// against the real 2C02 palette, masking makes the colours worse, roughly
+// doubling the error. Read straight, entry 0x21 comes out (57, 190, 255)
+// against a true sky blue of (63, 191, 255).
+//
+#define CC(x)	((WORD) (x))
 
 const WORD NesPalette[64] =
 {
