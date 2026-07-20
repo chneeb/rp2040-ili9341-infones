@@ -14,6 +14,7 @@
 #include <circle/timer.h>
 #include <circle/gpiopin.h>
 #include <circle/types.h>
+#include <circle/sound/pwmsoundbasedevice.h>
 #include <SDCard/emmc.h>
 #include <fatfs/ff.h>
 
@@ -40,6 +41,10 @@ public:
 	void PresentFrame (const u16 *pFrame);
 	unsigned ReadPad (void);
 	void WaitForNextFrame (void);
+	int SoundOpen (int nSampleRate);
+	void SoundClose (void);
+	int SoundWrite (const unsigned char *pSamples, int nCount);
+	int SoundBufferAvail (void);
 
 	static CKernel *Get (void)	{ return s_pThis; }
 
@@ -67,6 +72,9 @@ private:
 	// time the last wait ended, so a frame that runs long does not push every
 	// later frame back with it.
 	u64 m_nNextFrameTime = 0;
+
+	// Created once the emulator says what rate it wants.
+	CPWMSoundBaseDevice *m_pSound = 0;
 
 	static CKernel *s_pThis;
 };

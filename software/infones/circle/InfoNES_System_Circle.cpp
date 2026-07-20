@@ -198,9 +198,18 @@ void RomSelect_PreDrawLine (int line)
 }
 
 //
-// Sound. Stubbed for now - the panel and the emulator come first, and silence
-// is easier to tell apart from a timing problem than wrong audio is.
+// Sound.
 //
+// The APU hands over five channels of 8 bit unsigned mono - two pulse, one
+// triangle, one noise, one DPCM - and expects them mixed. pAPU_QUALITY is 2 in
+// InfoNES_pAPU.h, so the rate is 22050 Hz.
+//
+
+// A frame's worth at 22050 Hz is around 367 samples; this leaves plenty of
+// headroom for a long one.
+#define SOUND_CHUNK	1024
+
+static BYTE s_MixBuffer[SOUND_CHUNK];
 
 void InfoNES_SoundInit (void)
 {
@@ -208,21 +217,59 @@ void InfoNES_SoundInit (void)
 
 int InfoNES_SoundOpen (int samples_per_sync, int sample_rate)
 {
-	return 0;
+	int nResult = GamePi20_SoundOpen (sample_rate);
+
+	// The core starts muted (APU_Mute is 1 in InfoNES.cpp) and leaves it to the
+	// platform layer to decide otherwise, which the pico build does in main.cpp
+	// too. While it is set, InfoNES_pAPUHsync() zeroes all five wave buffers
+	// and K6502_rw.h drops APU register writes, so everything downstream works
+	// perfectly and produces silence.
+	if (nResult == 0)
+	{
+		APU_Mute = 0;
+	}
+
+	return nResult;
 }
 
 void InfoNES_SoundClose (void)
 {
+	GamePi20_SoundClose ();
 }
 
 void InfoNES_SoundOutput (int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3,
 			  BYTE *wave4, BYTE *wave5)
 {
+	// Averaging the five channels is what the reference ports do
+	// (linux/InfoNES_System_Linux.cpp). It cannot clip, at the cost of each
+	// channel being a fifth of full scale.
+	int nDone = 0;
+
+	while (nDone < samples)
+	{
+		int nChunk = samples - nDone;
+		if (nChunk > SOUND_CHUNK)
+		{
+			nChunk = SOUND_CHUNK;
+		}
+
+		for (int i = 0; i < nChunk; i++)
+		{
+			int j = nDone + i;
+
+			s_MixBuffer[i] = (BYTE) ((  wave1[j] + wave2[j] + wave3[j]
+						  + wave4[j] + wave5[j]) / 5);
+		}
+
+		GamePi20_SoundWrite (s_MixBuffer, nChunk);
+
+		nDone += nChunk;
+	}
 }
 
 int InfoNES_GetSoundBufferSize (void)
 {
-	return 0;
+	return GamePi20_SoundBufferAvail ();
 }
 
 //

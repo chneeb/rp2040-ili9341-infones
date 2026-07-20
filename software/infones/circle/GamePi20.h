@@ -25,6 +25,20 @@ unsigned GamePi20_ReadPad (void);
 // has been handed over, so the transfer runs during the wait.
 void GamePi20_WaitForNextFrame (void);
 
+// Start PWM audio at the rate the emulator asks for. Mono, 8 bit unsigned,
+// which is what the APU produces. Returns 0 on success.
+int GamePi20_SoundOpen (int nSampleRate);
+
+void GamePi20_SoundClose (void);
+
+// Queue mono 8 bit samples. Returns how many were taken; anything not taken is
+// dropped rather than waited for, so audio never holds up a frame.
+int GamePi20_SoundWrite (const unsigned char *pSamples, int nCount);
+
+// Room left in the queue, in samples. The APU uses this to decide how much to
+// generate.
+int GamePi20_SoundBufferAvail (void);
+
 #ifdef __cplusplus
 }
 #endif

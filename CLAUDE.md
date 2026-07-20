@@ -376,14 +376,53 @@ X and Y are not spare in any useful sense — they duplicate A and B. If
 something better comes up (a reset combo, a frame rate overlay) they are the
 buttons to take.
 
+### Sound
+
+PWM on GPIO 18, mono, 22050 Hz (`pAPU_QUALITY` is 2 in `InfoNES_pAPU.h`). The
+APU produces 8 bit unsigned, which Circle takes directly as
+`SoundFormatUnsigned8`, so nothing is converted. The five channels - two pulse,
+triangle, noise, DPCM - are averaged, as the reference ports do.
+
+`CPWMSoundBaseDevice` with the queue API: `AllocateQueue`, `SetWriteFormat`,
+`Start`, then `Write` per frame. 100 ms of queue. Anything that does not fit is
+dropped rather than waited for, so audio never holds up a frame.
+
+**Two traps, either of which gives perfect silence with everything apparently
+working:**
+
+- `InfoNES_GetSoundBufferSize()` must return **room left**, not data queued.
+  The APU clamps how much it generates to it
+  (`InfoNES_pAPUHsync` -> `std::min(bufferLeft, n)`), so returning Circle's
+  `GetQueueFramesAvail()` - which is frames *waiting to be sent*, despite the
+  name - deadlocks: an empty queue reads as no room, so nothing is generated,
+  so the queue stays empty. Use
+  `GetQueueSizeFrames() - GetQueueFramesAvail()`.
+- **`APU_Mute` starts at 1** (`InfoNES.cpp:261`) and the platform layer owns
+  clearing it; the pico build does it in `main.cpp`. While set,
+  `InfoNES_pAPUHsync()` zeroes all five wave buffers and `K6502_rw.h:386` drops
+  APU register writes. `InfoNES_SoundOpen()` clears it here.
+
+If sound ever goes quiet, the fastest split is a test tone straight to
+`CKernel::SoundOpen`/`SoundWrite` before the emulator starts: audible means the
+Circle half is fine and the emulator is not feeding it.
+
+### Frame pacing
+
+`InfoNES_LoadFrame()` presents and then waits, in that order - the frame is
+going out over DMA during the wait, so the transfer costs nothing extra while
+it fits in the period.
+
+The period is 16639 us, NTSC's 60.0988 Hz, not the flat 16666 the pico build
+uses. The deadline is carried forward rather than set from whenever the wait
+ended, which is what that build does and what makes it drift. A frame that
+overruns writes the lost time off instead of making it up: catching up means
+sprinting through the frames after it, which looks worse than one late frame.
+
 ### Not done yet
 
-- **Sound.** The five `InfoNES_Sound*` functions are stubs. Circle's
-  `CPWMSoundDevice` is the counterpart, and audio is mono on GPIO 18 — the
-  three PWM options in `configure-gamepi20.sh` are what put it there rather
-  than on GPIO 12/13, which are this board's Up and Right buttons.
-- **Frame pacing.** `InfoNES_LoadFrame()` presents and returns, so the emulator
-  runs at whatever rate it manages rather than at 60 Hz.
+- **Volume.** The five APU channels are averaged, as the reference ports do,
+  so one channel plays at a fifth of full scale. Summing with a smaller divisor
+  and clamping would be louder, at the risk of clipping.
 - **ROM selection.** `InfoNES_Menu()` returns 0 and `kernel.cpp` loads a fixed
   `/rom.nes`. `menu.cpp` and `RomLister.cpp` in the pico build are the model,
   but they are pico-sdk bound.

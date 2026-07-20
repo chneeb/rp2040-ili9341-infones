@@ -169,6 +169,95 @@ void CKernel::WaitForNextFrame (void)
 
 }
 
+//
+// Sound. PWM on GPIO 18, which on this board feeds both the speaker and the
+// earphone jack - see configure-gamepi20.sh for the three options that put it
+// there rather than on GPIO 12 and 13, which are the Up and Right buttons.
+//
+// The APU produces 8 bit unsigned mono, which Circle takes directly as
+// SoundFormatUnsigned8, so nothing has to be converted.
+//
+
+// Enough queued audio to ride out a frame that runs long, without adding so
+// much delay that the sound drifts noticeably behind the picture.
+#define SOUND_QUEUE_MSECS	100
+
+int CKernel::SoundOpen (int nSampleRate)
+{
+	if (m_pSound != 0)
+	{
+		return 0;
+	}
+
+	m_pSound = new CPWMSoundBaseDevice (&m_Interrupt, nSampleRate);
+	if (m_pSound == 0)
+	{
+		return -1;
+	}
+
+	if (!m_pSound->AllocateQueue (SOUND_QUEUE_MSECS))
+	{
+		delete m_pSound;
+		m_pSound = 0;
+
+		return -1;
+	}
+
+	m_pSound->SetWriteFormat (SoundFormatUnsigned8, 1);
+
+	if (!m_pSound->Start ())
+	{
+		delete m_pSound;
+		m_pSound = 0;
+
+		return -1;
+	}
+
+	return 0;
+}
+
+void CKernel::SoundClose (void)
+{
+	if (m_pSound != 0)
+	{
+		m_pSound->Cancel ();
+
+		delete m_pSound;
+		m_pSound = 0;
+	}
+}
+
+// Whatever does not fit is dropped. Waiting for room would stall the frame the
+// emulator is in the middle of, and a dropped sample is far less noticeable
+// than a late frame.
+int CKernel::SoundWrite (const unsigned char *pSamples, int nCount)
+{
+	if (m_pSound == 0)
+	{
+		return nCount;
+	}
+
+	return m_pSound->Write (pSamples, nCount);
+}
+
+// Room left to write into, which is what the APU means by "buffer size": it
+// clamps the number of samples it generates to this
+// (InfoNES_pAPUHsync -> std::min(bufferLeft, n)).
+//
+// Not GetQueueFramesAvail(): despite the name that is the number of frames
+// already queued and waiting to be sent. Returning it deadlocks the emulator
+// into silence - an empty queue reads as no room, so the APU generates
+// nothing, so the queue stays empty.
+int CKernel::SoundBufferAvail (void)
+{
+	if (m_pSound == 0)
+	{
+		return 0;
+	}
+
+	return m_pSound->GetQueueSizeFrames () - m_pSound->GetQueueFramesAvail ();
+}
+
 TShutdownMode CKernel::Run (void)
 {
 #if ST7789_TEST_PATTERN
@@ -298,5 +387,37 @@ void GamePi20_WaitForNextFrame (void)
 	assert (pKernel != 0);
 
 	pKernel->WaitForNextFrame ();
+}
+
+int GamePi20_SoundOpen (int nSampleRate)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->SoundOpen (nSampleRate);
+}
+
+void GamePi20_SoundClose (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	pKernel->SoundClose ();
+}
+
+int GamePi20_SoundWrite (const unsigned char *pSamples, int nCount)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->SoundWrite (pSamples, nCount);
+}
+
+int GamePi20_SoundBufferAvail (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->SoundBufferAvail ();
 }
 
