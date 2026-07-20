@@ -21,6 +21,10 @@ void GamePi20_PresentFrame (const unsigned short *pFrame);
 // A=1, B=2, SELECT=4, START=8, UP=0x10, DOWN=0x20, LEFT=0x40, RIGHT=0x80.
 unsigned GamePi20_ReadPad (void);
 
+// Block until the next frame is due. Called once per frame, after the picture
+// has been handed over, so the transfer runs during the wait.
+void GamePi20_WaitForNextFrame (void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -14,8 +14,10 @@
 #define DRIVE		"SD:"
 #define ROM_FILE	"SD:/rom.nes"
 
-// RGB565, matching the panel's colour model (ST7789_SWAP_COLOR_BYTES FALSE).
-#define RGB565(r, g, b)	((u16) ((((r) & 0x1F) << 11) | (((g) & 0x3F) << 5) | ((b) & 0x1F)))
+// The panel's colour model is big endian RGB565 (ST7789_SWAP_COLOR_BYTES is
+// TRUE, because the NES palette is stored that way), so colours written by
+// hand have to be swapped to match.
+#define RGB565(r, g, b)	((u16) __builtin_bswap16 ((u16) ((((r) & 0x1F) << 11) | (((g) & 0x3F) << 5) | ((b) & 0x1F))))
 
 // InfoNES pad bits.
 #define NES_PAD_A	0x01
@@ -29,8 +31,7 @@
 
 CKernel *CKernel::s_pThis = 0;
 
-// The board's buttons, and what the NES sees them as. The shoulder buttons and
-// X/Y have no NES equivalent and are left out.
+// The board's buttons, and what the NES sees them as.
 static const struct
 {
 	unsigned nPin;
@@ -128,6 +129,44 @@ void CKernel::PresentFrame (const u16 *pFrame)
 	Area.y2 = NES_OFFSET_Y + NES_HEIGHT - 1;
 
 	m_Display.SetArea (Area, pFrame);
+}
+
+// NTSC NES runs at 60.0988 Hz, which is 16639 us a frame. The pico build uses
+// 16666 (a flat 60 Hz); the difference is small but it is free to get right,
+// and it is what decides whether music plays at the pitch it should.
+#define FRAME_PERIOD_US		16639
+
+// Wait until the next frame is due.
+//
+// The deadline is carried forward, rather than set from the time this wait
+// happened to end, so that the odd long frame does not push every later frame
+// back with it. If a frame runs so long that the deadline has already gone by,
+// the lost time is written off instead of being made up - catching up would
+// mean sprinting through the following frames, which looks far worse than a
+// single late one.
+void CKernel::WaitForNextFrame (void)
+{
+	u64 nNow = CTimer::GetClockTicks64 ();
+
+	if (m_nNextFrameTime == 0)
+	{
+		m_nNextFrameTime = nNow;
+	}
+
+	m_nNextFrameTime += FRAME_PERIOD_US;
+
+	if (nNow < m_nNextFrameTime)
+	{
+		while (CTimer::GetClockTicks64 () < m_nNextFrameTime)
+		{
+			// The frame is already on its way out over DMA while this spins.
+		}
+	}
+	else
+	{
+		m_nNextFrameTime = nNow;
+	}
+
 }
 
 TShutdownMode CKernel::Run (void)
@@ -252,3 +291,12 @@ unsigned GamePi20_ReadPad (void)
 
 	return pKernel->ReadPad ();
 }
+
+void GamePi20_WaitForNextFrame (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	pKernel->WaitForNextFrame ();
+}
+

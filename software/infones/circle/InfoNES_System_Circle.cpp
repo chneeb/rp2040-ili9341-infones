@@ -86,6 +86,11 @@ int InfoNES_LoadFrame (void)
 {
 	GamePi20_PresentFrame (s_Frame);
 
+	// After presenting, not before: the frame is going out over DMA while this
+	// waits, so the transfer costs nothing extra as long as it fits inside the
+	// frame period.
+	GamePi20_WaitForNextFrame ();
+
 	return 0;
 }
 

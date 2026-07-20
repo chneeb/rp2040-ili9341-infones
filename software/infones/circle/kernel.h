@@ -39,6 +39,7 @@ public:
 	// Reached from the InfoNES platform layer through GamePi20.h.
 	void PresentFrame (const u16 *pFrame);
 	unsigned ReadPad (void);
+	void WaitForNextFrame (void);
 
 	static CKernel *Get (void)	{ return s_pThis; }
 
@@ -61,6 +62,11 @@ private:
 
 	static const unsigned GPIOButtonCount = 12;
 	CGPIOPin		m_ButtonPins[GPIOButtonCount];
+
+	// Frame pacing. The deadline is carried forward rather than taken from the
+	// time the last wait ended, so a frame that runs long does not push every
+	// later frame back with it.
+	u64 m_nNextFrameTime = 0;
 
 	static CKernel *s_pThis;
 };
