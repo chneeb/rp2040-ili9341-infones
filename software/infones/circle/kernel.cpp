@@ -240,7 +240,13 @@ void CKernel::WaitForNextFrame (void)
 	}
 	else if (nNow - m_nSecondStarted >= 1000000)
 	{
-		m_nMeasuredFPS = m_nFramesThisSecond;
+		// Rate over the window that actually elapsed, not a count of frames in
+		// it. The window ends on the first frame past a second, so it runs a
+		// frame long - counting would read one high and make a correct 60.1 Hz
+		// look like 61.
+		u64 nElapsed = nNow - m_nSecondStarted;
+
+		m_nMeasuredFPS = (unsigned) ((u64) m_nFramesThisSecond * 1000000 / nElapsed);
 		m_nFramesThisSecond = 0;
 		m_nSecondStarted = nNow;
 	}
