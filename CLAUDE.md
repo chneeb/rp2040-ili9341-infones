@@ -321,6 +321,38 @@ which exists because an RP2350 has 264 KB of RAM. A Pi has 512 MB, and
 `ST7789DMADisplay::SetArea` already returns while the frame is still going out,
 so the next frame is emulated during the transfer either way.
 
+#### Why it stays pillarboxed
+
+Filling the width would be the more faithful picture, not a distortion: NES
+pixels are not square, and on a 4:3 set 256x240 is displayed as 320x240. The
+scaling is clean too - 256 to 320 is exactly 4:5, so every fourth pixel doubles
+and nothing else shifts. `NES_FILL_WIDTH` in `DisplayConfig.h` implements it,
+with a precomputed source-column table, the same approach nesemu uses
+(`spi_lcd.c`, `scaleX[]`).
+
+It is off because the bandwidth is not there. A full width frame is 153,600
+bytes against 122,880, which is 19.7 ms against 15.7 at 62.5 MHz, and the
+budget is 16.64 ms. Filling the width needs at least 74 MHz sustained.
+
+Circle divides the **measured** core clock and truncates, so on this board the
+only rates available are 250/2, 250/4 and 250/6 - **125, 62.5 and 41.7 MHz**,
+with nothing in between:
+
+- 62.5 MHz fits the panel but not the frame: games run about 15% slow, with the
+  audio pitch to match.
+- 125 MHz is enough bandwidth and the menu renders on it perfectly, but it is
+  marginal - a game garbles after a while. Note this means a clean menu is not
+  evidence of a sound clock; only sustained play is.
+- Raising the core clock was tried and **the firmware ignores `core_freq` on
+  this board**, with or without `force_turbo=1`. It stayed at 250 both times,
+  which is worth knowing before trying again: the menu's status line reports
+  the measured core clock and the resulting SPI rate, so this is one boot to
+  check rather than a guess.
+
+Asking for a rate the core cannot divide evenly is actively dangerous rather
+than a graceful fallback: 87.5 MHz on a 250 MHz core truncates to a divisor of
+2 and runs the bus at 125.
+
 **The picture is pillarboxed, not scaled**: 256 wide is 122,880 bytes a frame
 against 153,600, which at 62.5 MHz is 15.7 ms against 19.7. That is the
 difference between clearing 60 fps and not being able to. `NES_OFFSET_X` puts

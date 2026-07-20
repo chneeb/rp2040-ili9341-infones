@@ -82,9 +82,52 @@ void InfoNES_PostDrawLine (int line)
 	// Nothing to do: the core wrote straight into the frame.
 }
 
+#if NES_FILL_WIDTH
+
+// 256 to 320 is exactly 4:5, so this is a clean nearest neighbour: four source
+// pixels become five, with one of them doubled, and nothing else moves. The
+// source column for each output column never changes, so it is worked out once.
+static WORD s_Scaled[NES_OUT_WIDTH * NES_HEIGHT];
+static unsigned s_SourceColumn[NES_OUT_WIDTH];
+static boolean s_bScaleReady = FALSE;
+
+static void ScaleFrame (void)
+{
+	if (!s_bScaleReady)
+	{
+		for (unsigned x = 0; x < NES_OUT_WIDTH; x++)
+		{
+			s_SourceColumn[x] = x * NES_WIDTH / NES_OUT_WIDTH;
+		}
+
+		s_bScaleReady = TRUE;
+	}
+
+	const WORD *pIn = s_Frame;
+	WORD *pOut = s_Scaled;
+
+	for (unsigned y = 0; y < NES_HEIGHT; y++)
+	{
+		for (unsigned x = 0; x < NES_OUT_WIDTH; x++)
+		{
+			pOut[x] = pIn[s_SourceColumn[x]];
+		}
+
+		pIn += NES_WIDTH;
+		pOut += NES_OUT_WIDTH;
+	}
+}
+
+#endif
+
 int InfoNES_LoadFrame (void)
 {
+#if NES_FILL_WIDTH
+	ScaleFrame ();
+	GamePi20_PresentFrame (s_Scaled);
+#else
 	GamePi20_PresentFrame (s_Frame);
+#endif
 
 	// After presenting, not before: the frame is going out over DMA while this
 	// waits, so the transfer costs nothing extra as long as it fits inside the

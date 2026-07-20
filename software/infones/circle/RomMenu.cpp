@@ -3,9 +3,12 @@
 //
 #include "RomMenu.h"
 #include "InputConfig.h"
+#include "DisplayConfig.h"
 
 #include <circle/util.h>
 #include <fatfs/ff.h>
+#include <circle/machineinfo.h>
+#include <circle/string.h>
 
 // InfoNES pad bits, as CKernel::ReadPad() reports them.
 #define PAD_A		0x01
@@ -16,6 +19,11 @@
 #define ROW_HEIGHT	16
 #define TOP_MARGIN	28
 #define LEFT_MARGIN	12
+
+// Room kept clear at the bottom for the status line. C2DGraphics::DrawText
+// draws nothing at all - not even clipped - if the glyph would run past the
+// bottom edge, so the line has to fit with the font's underline included.
+#define FOOTER_HEIGHT	20
 
 #define COLOUR_BG	COLOR2D (0, 0, 40)
 #define COLOUR_TEXT	COLOR2D (200, 200, 200)
@@ -108,7 +116,7 @@ void CRomMenu::Draw (void)
 			     C2DGraphics::AlignCenter);
 
 	// How many rows fit below the title.
-	unsigned nRows = (nHeight - TOP_MARGIN) / ROW_HEIGHT;
+	unsigned nRows = (nHeight - TOP_MARGIN - FOOTER_HEIGHT) / ROW_HEIGHT;
 
 	// Keep the selection on screen.
 	if (m_nSelected < m_nTop)
@@ -134,6 +142,24 @@ void CRomMenu::Draw (void)
 				     nIndex == m_nSelected ? COLOUR_CHOSEN : COLOUR_TEXT,
 				     m_Names[nIndex]);
 	}
+
+	// What the panel is actually being clocked at. Circle divides the measured
+	// core clock and truncates, so the rate that comes out depends on what the
+	// firmware did with core_freq - which is worth being able to read rather
+	// than assume.
+	unsigned nCore = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
+	unsigned nDivisor = nCore / ST7789_CLOCK_SPEED;
+	if (nDivisor == 0)
+	{
+		nDivisor = 1;
+	}
+
+	CString Info;
+	Info.Format ("core %u MHz   spi %u MHz   %u px",
+		     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH);
+
+	m_Graphics.DrawText (nWidth / 2, nHeight - FOOTER_HEIGHT, COLOUR_TEXT, Info,
+			     C2DGraphics::AlignCenter);
 
 	m_Graphics.UpdateDisplay ();
 }

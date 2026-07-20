@@ -175,14 +175,15 @@ void CKernel::UpdateVolume (void)
 	m_bVolumeUpWasDown = bUp;
 }
 
-// Hand the 256x240 picture to the panel, centred in its 320x240. SetArea starts
-// the transfer and returns, so the next frame is emulated while this one is
-// still going out.
+// Hand the picture to the panel. NES_OUT_WIDTH is 320 when the width is being
+// filled and 256 when it is pillarboxed; either way it is centred. SetArea
+// starts the transfer and returns, so the next frame is emulated while this one
+// is still going out.
 void CKernel::PresentFrame (const u16 *pFrame)
 {
 	CDisplay::TArea Area;
 	Area.x1 = NES_OFFSET_X;
-	Area.x2 = NES_OFFSET_X + NES_WIDTH - 1;
+	Area.x2 = NES_OFFSET_X + NES_OUT_WIDTH - 1;
 	Area.y1 = NES_OFFSET_Y;
 	Area.y2 = NES_OFFSET_Y + NES_HEIGHT - 1;
 
@@ -363,7 +364,7 @@ TShutdownMode CKernel::Run (void)
 //
 void CKernel::DrawTestPattern (void)
 {
-	static u16 Frame[NES_WIDTH * NES_HEIGHT];
+	static u16 Frame[NES_OUT_WIDTH * NES_HEIGHT];
 
 	static const u16 Bars[4] =
 	{
@@ -375,9 +376,9 @@ void CKernel::DrawTestPattern (void)
 
 	for (unsigned y = 0; y < NES_HEIGHT; y++)
 	{
-		for (unsigned x = 0; x < NES_WIDTH; x++)
+		for (unsigned x = 0; x < NES_OUT_WIDTH; x++)
 		{
-			Frame[y * NES_WIDTH + x] = Bars[x / (NES_WIDTH / 4)];
+			Frame[y * NES_OUT_WIDTH + x] = Bars[x / (NES_OUT_WIDTH / 4)];
 		}
 	}
 
@@ -387,15 +388,15 @@ void CKernel::DrawTestPattern (void)
 	const u16 Yellow = RGB565 (31, 63, 0);
 	for (unsigned i = 0; i < 3; i++)
 	{
-		for (unsigned x = 0; x < NES_WIDTH; x++)
+		for (unsigned x = 0; x < NES_OUT_WIDTH; x++)
 		{
-			Frame[i * NES_WIDTH + x] = Yellow;
-			Frame[(NES_HEIGHT - 1 - i) * NES_WIDTH + x] = Yellow;
+			Frame[i * NES_OUT_WIDTH + x] = Yellow;
+			Frame[(NES_HEIGHT - 1 - i) * NES_OUT_WIDTH + x] = Yellow;
 		}
 		for (unsigned y = 0; y < NES_HEIGHT; y++)
 		{
-			Frame[y * NES_WIDTH + i] = Yellow;
-			Frame[y * NES_WIDTH + (NES_WIDTH - 1 - i)] = Yellow;
+			Frame[y * NES_OUT_WIDTH + i] = Yellow;
+			Frame[y * NES_OUT_WIDTH + (NES_OUT_WIDTH - 1 - i)] = Yellow;
 		}
 	}
 
@@ -405,11 +406,11 @@ void CKernel::DrawTestPattern (void)
 	{
 		for (unsigned x = 0; x < 20; x++)
 		{
-			Frame[y * NES_WIDTH + x] = Yellow;
+			Frame[y * NES_OUT_WIDTH + x] = Yellow;
 		}
-		for (unsigned x = NES_WIDTH - 10; x < NES_WIDTH; x++)
+		for (unsigned x = NES_OUT_WIDTH - 10; x < NES_OUT_WIDTH; x++)
 		{
-			Frame[y * NES_WIDTH + x] = Magenta;
+			Frame[y * NES_OUT_WIDTH + x] = Magenta;
 		}
 	}
 

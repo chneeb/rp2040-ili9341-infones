@@ -22,13 +22,30 @@
 #define ST7789_WIDTH		320
 #define ST7789_HEIGHT		240
 
-// The NES renders 256x240. Pillarboxing that rather than stretching it to 320
-// is both simpler and faster: 256 wide is 122,880 bytes a frame against
-// 153,600, which at 62.5 MHz is 15.7 ms against 19.7 - the difference between
-// clearing 60 fps and not being able to.
-#define NES_WIDTH		256
+// The NES renders 256x240, and its pixels are not square: on a 4:3 set each is
+// displayed a quarter wider than it is tall, so 320x240 is what a CRT actually
+// showed. Filling the panel is the more faithful picture, not a distortion -
+// and 256 to 320 is exactly 4:5, so every fourth pixel is doubled and nothing
+// else shifts.
+//
+// It costs bandwidth: 153,600 bytes a frame against 122,880, which is 19.7 ms
+// against 15.7 at 62.5 MHz. The budget is 16.64 ms, so filling the width needs
+// a faster SPI clock - see ST7789_CLOCK_SPEED below, and note that it needs a
+// matching core_freq in config.txt.
+//
+// Set to 0 to go back to a pillarboxed 256 with black bars either side.
+#define NES_FILL_WIDTH		0
+
+#define NES_WIDTH		256		// what the core renders
 #define NES_HEIGHT		240
-#define NES_OFFSET_X		((ST7789_WIDTH - NES_WIDTH) / 2)
+
+#if NES_FILL_WIDTH
+#define NES_OUT_WIDTH		320		// what reaches the panel
+#else
+#define NES_OUT_WIDTH		NES_WIDTH
+#endif
+
+#define NES_OFFSET_X		((ST7789_WIDTH - NES_OUT_WIDTH) / 2)
 #define NES_OFFSET_Y		((ST7789_HEIGHT - NES_HEIGHT) / 2)
 
 // GamePi20 wiring. MISO (BCM 9) is not connected, which is fine: the panel is
@@ -47,12 +64,28 @@
 #define ST7789_CPOL		0
 #define ST7789_CPHA		0
 
-// Circle derives the SPI divisor from the measured core clock, so on a 250 MHz
-// core the reachable rates are 62.5, 41.7 and 31.25 MHz. 62.5 MHz is well above
-// what the ST7789VW is specified for; if the picture tears, flickers or shows
-// intermittent noise, step down to 41666666. A marginal clock looks like a
-// wiring fault, not like a clock problem.
-#define ST7789_CLOCK_SPEED	62500000
+// Circle divides the *measured* core clock by this and truncates, so the rate
+// that comes out depends on core_freq in config.txt:
+//
+//   core_freq=250 (default)  ->  62.5, 41.7, 31.25 MHz
+//   core_freq=350            ->  87.5, 58.3 MHz
+//   core_freq=400            ->  100, 66.7, 50 MHz
+//
+// A full width frame is 153,600 bytes, which needs at least 74 MHz to fit in
+// the 16.64 ms budget, so NES_FILL_WIDTH wants core_freq=350 and 87.5 MHz.
+//
+// WARNING: asking for 87.5 MHz without setting core_freq does not give 62.5 -
+// it truncates 250/87.5 to a divisor of 2 and runs the bus at 125 MHz. The
+// config.txt line is not optional.
+//
+// All of this is far beyond what the ST7789VW is specified for. If the picture
+// tears, flickers or shows intermittent noise, drop back a step - a marginal
+// clock looks like a wiring fault rather than a clock problem.
+#if NES_FILL_WIDTH
+#define ST7789_CLOCK_SPEED	87500000	// needs core_freq=350
+#else
+#define ST7789_CLOCK_SPEED	62500000	// stock core_freq=250
+#endif
 
 // The GamePi20 has the panel mounted upside down. MY | MV | ML turns the
 // picture around at no cost; 0x70 is the same layout the right way up.
