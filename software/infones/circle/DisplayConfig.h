@@ -14,7 +14,7 @@
 // Set to 1 to draw a static test pattern and stop, instead of running the
 // emulator. Use it when bringing the panel up: it tells wiring, orientation
 // and colour order apart before any emulator code is involved.
-#define ST7789_TEST_PATTERN	1
+#define ST7789_TEST_PATTERN	0
 
 // The panel is a 240x320 ST7789VW driven in landscape. MADCTL's MV bit swaps X
 // and Y, so it presents as 320x240, and being a true 240x320 part it needs no

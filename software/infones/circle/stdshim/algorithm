@@ -1,0 +1,16 @@
+// Minimal stand-in: the InfoNES core only uses std::min and std::max.
+#pragma once
+
+namespace std {
+
+template <typename T> inline const T &min (const T &a, const T &b)
+{
+	return a < b ? a : b;
+}
+
+template <typename T> inline const T &max (const T &a, const T &b)
+{
+	return a < b ? b : a;
+}
+
+}

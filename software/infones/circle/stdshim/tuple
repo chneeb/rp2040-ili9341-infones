@@ -1,0 +1,2 @@
+// The InfoNES core includes <tuple> but never uses it.
+#pragma once

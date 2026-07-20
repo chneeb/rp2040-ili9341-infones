@@ -1,0 +1,3 @@
+// Minimal stand-in: the InfoNES core only needs the basic type definitions.
+#pragma once
+#include <stddef.h>
