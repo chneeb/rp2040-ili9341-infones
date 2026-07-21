@@ -126,6 +126,9 @@ static void ScaleFrame (void)
 
 #endif
 
+// Defined with the rest of the battery SRAM handling, below.
+static void FlushSRAMPeriodically (void);
+
 int InfoNES_LoadFrame (void)
 {
 #if !SKIP_DISPLAY
@@ -153,6 +156,11 @@ int InfoNES_LoadFrame (void)
 #endif
 	}
 #endif
+
+	// Before the wait, for the same reason: an SD write that fits in the slack
+	// left in this frame costs nothing. It is a different peripheral from the
+	// panel, so it does not disturb the transfer started above.
+	FlushSRAMPeriodically ();
 
 	// After presenting, not before: the frame is going out over DMA while this
 	// waits, so the transfer costs nothing extra as long as it fits inside the
@@ -259,6 +267,135 @@ void InfoNES_ReleaseRom (void)
 }
 
 //
+// Battery backed SRAM
+//
+// The 8 KB at 0x6000-0x7fff on carts that declare it (ROM_SRAM, set from the
+// iNES header by InfoNES_Reset). Kept alongside the ROM as <game>.sav.
+//
+// This is not a save state: it is the cart's own battery, so it only helps
+// games that had one. Zelda and Final Fantasy keep their save slots; a game
+// that used passwords still uses passwords.
+//
+
+#define SAVE_PATH_LENGTH	256
+
+// The .sav path for the game now running, empty when none is loaded.
+static char s_SavePath[SAVE_PATH_LENGTH];
+
+// What is currently on the card, so a flush can tell whether anything actually
+// changed. SRAMwritten is no use for this on its own: it is set by any write to
+// the region, and games that treat it as scratch work RAM set it every frame,
+// which would mean rewriting an identical file forever.
+static BYTE s_SavedSRAM[SRAM_SIZE];
+
+// "/nes/Game.nes" -> "/nes/Game.sav". Anything without room for the suffix, or
+// with no extension to replace, gets no save file rather than a mangled one.
+static void MakeSavePath (const char *pszRom)
+{
+	s_SavePath[0] = '\0';
+
+	size_t nLength = strlen (pszRom);
+	if (nLength < 5 || nLength >= SAVE_PATH_LENGTH)
+	{
+		return;
+	}
+
+	const char *pExt = pszRom + nLength - 4;
+	if (*pExt != '.')
+	{
+		return;
+	}
+
+	memcpy (s_SavePath, pszRom, nLength - 4);
+	strcpy (s_SavePath + nLength - 4, ".sav");
+}
+
+// Called once the machine is reset, so ROM_SRAM is valid and InfoNES_ReadRom
+// has already zeroed SRAM (and laid down a trainer, if the cart has one - a
+// cart with both is not a combination that exists, but loading after leaves
+// the battery contents winning either way).
+static void LoadSRAM (void)
+{
+	memset (s_SavedSRAM, 0, SRAM_SIZE);
+
+	if (!ROM_SRAM || s_SavePath[0] == '\0')
+	{
+		return;
+	}
+
+	FIL File;
+	if (f_open (&File, s_SavePath, FA_READ) != FR_OK)
+	{
+		// No save yet. Not an error - the first one will create it.
+		return;
+	}
+
+	UINT nRead;
+	if (   f_read (&File, SRAM, SRAM_SIZE, &nRead) == FR_OK
+	    && nRead == SRAM_SIZE)
+	{
+		memcpy (s_SavedSRAM, SRAM, SRAM_SIZE);
+	}
+	else
+	{
+		// A short or unreadable file is a truncated write from a power cut
+		// mid-flush. Start the cart from blank rather than from half a save.
+		memset (SRAM, 0, SRAM_SIZE);
+	}
+
+	f_close (&File);
+
+	SRAMwritten = false;
+}
+
+// Write the battery out if it differs from what is on the card. Returns
+// quickly and does nothing at all in the common case.
+static void SaveSRAM (void)
+{
+	if (   !ROM_SRAM
+	    || s_SavePath[0] == '\0'
+	    || memcmp (SRAM, s_SavedSRAM, SRAM_SIZE) == 0)
+	{
+		return;
+	}
+
+	FIL File;
+	if (f_open (&File, s_SavePath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	{
+		return;
+	}
+
+	UINT nWritten;
+	if (   f_write (&File, SRAM, SRAM_SIZE, &nWritten) == FR_OK
+	    && nWritten == SRAM_SIZE)
+	{
+		memcpy (s_SavedSRAM, SRAM, SRAM_SIZE);
+	}
+
+	f_close (&File);
+
+	SRAMwritten = false;
+}
+
+// Quitting to the menu is not how this device is usually put down - it is
+// switched off mid-game - so waiting for the quit chord to flush would lose
+// most saves. Checked once every few seconds instead, which bounds the loss to
+// that and costs a memcmp the rest of the time.
+#define SRAM_FLUSH_FRAMES	300		// about five seconds
+
+static void FlushSRAMPeriodically (void)
+{
+	static unsigned nFrame = 0;
+
+	if (++nFrame >= SRAM_FLUSH_FRAMES)
+	{
+		nFrame = 0;
+
+		SaveSRAM ();
+	}
+}
+
+//
 // Menu
 //
 
@@ -267,17 +404,28 @@ void InfoNES_ReleaseRom (void)
 // here when there is nothing to play.
 int InfoNES_Menu (void)
 {
+	// The game that just quit, before its ROM and SRAM are replaced below.
+	// On the first call there is none and s_SavePath is empty.
+	SaveSRAM ();
+
 	const char *pRom = GamePi20_ChooseRom ();
 	if (pRom == nullptr)
 	{
 		return -1;
 	}
 
+	// Nothing loaded from here until the new game is up, so a failure below
+	// cannot write the old game's battery into the new game's file.
+	s_SavePath[0] = '\0';
+
 	// Releases the previous ROM, reads the new one and resets the machine.
 	if (InfoNES_Load (pRom) != 0)
 	{
 		return -1;
 	}
+
+	MakeSavePath (pRom);
+	LoadSRAM ();
 
 	return 0;
 }

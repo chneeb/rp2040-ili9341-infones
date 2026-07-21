@@ -609,8 +609,45 @@ reason this is a separate boot mode rather than something offered mid-game.
 Links `lib/usb/gadget/libusbgadget.a` and `lib/usb/libusb.a`. `MachineModelZeroW`
 is on the gadget-capable whitelist in `dwusbgadget.cpp`.
 
+### Battery backed SRAM
+
+Carts that declare a battery (`ROM_SRAM`, from the iNES header) keep their 8 KB
+at `0x6000-0x7fff` in `<game>.sav` next to the ROM in `/nes`. All of it is in
+`InfoNES_System_Circle.cpp`; no new files, so the Makefile is untouched.
+
+This is the cart's own battery, **not a save state**. Zelda and Final Fantasy
+keep their slots; a passwords game still uses passwords.
+
+Loaded in `InfoNES_Menu()` *after* `InfoNES_Load()`, which is the only correct
+point: `InfoNES_ReadRom()` zeroes SRAM and `InfoNES_Reset()` is what sets
+`ROM_SRAM`, so neither is known before it returns.
+
+**Flushed every 300 frames, not on quit.** The device is switched off mid-game
+far more often than it is quit to the menu, so a quit-only flush would lose
+most saves. Five seconds bounds the loss.
+
+**The trigger is a memcmp against a shadow copy, not `SRAMwritten`.** That flag
+is set by *any* write to the region, and plenty of games use the area as
+scratch work RAM and set it every frame — flushing on it would rewrite an
+identical 8 KB forever. Comparing against what is already on the card costs a
+few microseconds at 0.2 Hz and writes only on a real change.
+
+A short or unreadable `.sav` (a power cut mid-flush) starts the cart blank
+rather than from half a save.
+
+The flush sits between the frame present and `GamePi20_WaitForNextFrame()`, so
+it comes out of the slack already in the frame rather than adding to it, and
+EMMC is a different peripheral from the panel's SPI so it does not disturb the
+transfer in flight.
+
 ### Not done yet
 
-- Nothing outstanding. Possible next steps: save states, an on-screen volume
-  indicator (X and Y are the only spare buttons), or per-game battery-backed
-  SRAM.
+- Save states (a full machine snapshot, as opposed to the cart battery above).
+  The core has no interface for it: `A/X/Y/SP/F` are file-scope in `K6502.cpp`
+  and not in `K6502.h`; `ROMBANK`/`PPUBANK`/`SRAMBANK` are raw pointers that
+  have to be stored as offsets and re-derived; and each of the 137 mappers
+  keeps private globals (`Map4_Regs`, `Map4_IRQ_Cnt`, …) with no common save
+  hook, so it would have to be done per mapper. Mappers 0–4 cover most of the
+  library. `ChrBuf` need not be saved — set `ChrBufUpdate = 0xFF` and let it
+  regenerate.
+- An on-screen volume indicator (X and Y are the only spare buttons).
