@@ -276,9 +276,12 @@ SD card: `bootcode.bin`, `start.elf`, `fixup.dat` (from `make` in
 `circle/boot`), `config.txt` (a copy of `circle/boot/config32.txt`),
 `cmdline.txt`, `kernel.img`, and the games in a `nes/` directory.
 
-`config.txt` also carries `force_turbo=0`, replacing Circle's `initial_turbo=0`.
-That settles the core clock at 400 MHz, which is what lets the panel run at
-400/4 = 100 MHz. See the display notes for why it is not a hard guarantee.
+`config.txt` also pins the core clock (`core_freq=250`, `core_freq_min=250`,
+above the `[model]` markers) so the SPI rate derived from it stays put. See the
+display notes.
+
+**Hold Up while powering on** to boot into USB mass storage mode instead of the
+emulator - see [USB transfer mode](#usb-transfer-mode).
 
 ### Four things the core needs that it does not advertise
 
@@ -337,9 +340,15 @@ It costs bandwidth. Against the 16.64 ms budget of one frame:
 
 | | frame time | |
 |---|---|---|
-| 256 px @ 62.5 MHz | 15.7 ms | every frame |
-| 320 px @ 66.7 MHz | 18.4 ms | every second frame |
-| 320 px @ 100 MHz | 12.3 ms | every frame |
+| 320 px @ 62.5 MHz (default) | 19.7 ms | every second frame - 30 Hz picture |
+| 320 px @ 87.5 MHz | 14.0 ms | every frame - 60 Hz picture |
+| 320 px @ 100 MHz | 12.3 ms | every frame, but degrades the panel |
+
+At the default the picture runs at 30 Hz while the game, input and audio stay at
+60. 60 Hz picture needs about 74 MHz (naively; the per-frame scale and copy eat
+into the window, so more like 80+), which means pinning the core higher -
+`core_freq=350` and `ST7789_TARGET_CLOCK` of 87500000 gives divisor 4 - at a
+cost in battery. 100 MHz has the bandwidth but visibly degrades this panel.
 
 **The display rate looks after itself.** `InfoNES_LoadFrame()` drops a frame if
 the previous one is still going out, rather than waiting for the bus. Waiting
@@ -347,19 +356,31 @@ would stall the emulator and cost the game its speed and its audio pitch;
 dropping only costs smoothness. So the picture runs as fast as the bus allows
 and the game always runs at the right speed.
 
-That matters because **the core clock will not stay put**. It is roughly 250 MHz
-idle and 400 under load, and Circle measures it once at init, computes the SPI
-divisor and never looks again - so the real bus rate moves with the core, and
-the same card can boot onto a different rate from one power-up to the next.
-`force_turbo=0` in config.txt settles it at 400 most of the time but is not a
-hard guarantee; it still drops to 250 occasionally. `core_freq` is simply
-ignored on this board - 250 and 350 were both tried, with and without
-`force_turbo`, and neither had any effect.
+That matters because **the core clock does not stay put on its own**. It is
+roughly 250 MHz idle and 400 under load, and Circle measures it once at init,
+computes the SPI divisor and never looks again - so an uncontrolled core takes
+the bus rate with it. At divisor 4 that is 62.5 MHz at core 250 and 100 MHz at
+core 400, and 100 degrades this panel until the core drops back.
 
-The menu's status line reports the current core clock and the bus rate it
-implies **using the divisor fixed at init**, which is the only honest way to
-show it. An earlier version recomputed the divisor from the current core clock
-and so reported a rate the hardware was not running at.
+Two things keep it in hand, and either would do on its own:
+
+- **`config.txt` pins the core** at 250 with `core_freq=250` and
+  `core_freq_min=250`. **These must sit above the `[pi4]`/`[cm4]` markers.**
+  Anything after a `[model]` filter applies only to that model, so a `core_freq`
+  at the end of the file is silently ignored on a Zero - which is exactly what
+  happened for several rounds here, and is why an earlier version of this note
+  wrongly claimed the firmware ignores `core_freq` altogether. It does not; it
+  was in the wrong section.
+- **`CST7789DMADisplay::SetTargetClock()` re-aims the bus** once a second from
+  `CKernel::WaitForNextFrame()`, holding it at `ST7789_TARGET_CLOCK` whatever
+  the core is doing. Re-requesting the rate is not enough by itself:
+  `CSPIMasterDMA` divides by the core rate it captured at construction, equally
+  stale, so the request is scaled by how far the core has moved since. With the
+  core pinned this is a no-op; it is the belt to config.txt's braces, and it
+  covers the case where the pin is ever lost.
+
+The menu's status line shows the current core clock (which still moves) and the
+held bus rate.
 
 ##### The bug that made all of this look like a clock problem
 
@@ -555,6 +576,38 @@ level.
 `SKIP_DISPLAY` in `DisplayConfig.h` remains from that search: it runs the
 emulator and its sound but never sends a frame, which separates anything
 audible into "follows the display" and "does not".
+
+### USB transfer mode
+
+Holding **Up at power-on** boots into USB mass storage instead of the emulator:
+the SD card appears as a drive on an attached PC. `CKernel::UpHeldAtBoot()`
+reads the pin once after the pull-ups settle, and `RunUSBGadget()` takes over.
+
+Deliberately stateless - nothing is written and no flag survives a boot, so a
+plain power cycle is always an emulator again and the device cannot be stranded
+in transfer mode. The file system is never mounted in this mode either, so the
+two sides never hold the same FAT.
+
+Three things Circle's gadget support requires, each of which failed silently
+when missing:
+
+- **A valid USB vendor ID.** Circle ships `USB_GADGET_VENDOR_ID` as `0x0000`,
+  which `CDWUSBGadget::Initialize()` rejects outright, so a gadget with the
+  default never starts. `USB_GADGET_VID`/`_PID` in `InputConfig.h` pass
+  `0x1209:0x0001` (pid.codes, the open-source VID) explicitly.
+- **The gadget must never be destroyed** - `~CUSBMSDGadget()` is `assert(0)`.
+  It is heap allocated and leaked on purpose; the only way out is a reboot.
+- **Wait for the async frame before touching USB.** `SetArea` returns while the
+  DMA is still running, so halting or reconfiguring mid-transfer leaves half a
+  screen - which is what a failed gadget start looked like before the wait was
+  added.
+
+`CUSBMSDGadget::Update()` does the actual block I/O rather than just pumping
+state, so it cannot be called from the 16 ms game loop - which is the other
+reason this is a separate boot mode rather than something offered mid-game.
+
+Links `lib/usb/gadget/libusbgadget.a` and `lib/usb/libusb.a`. `MachineModelZeroW`
+is on the gadget-capable whitelist in `dwusbgadget.cpp`.
 
 ### Not done yet
 

@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "GamePi20.h"
 #include "RomMenu.h"
+#include <circle/2dgraphics.h>
 #include <circle/util.h>
 #include <circle/machineinfo.h>
 #include <assert.h>
@@ -35,6 +36,10 @@
 
 CKernel *CKernel::s_pThis = 0;
 
+// Ask for core/DIVISOR rather than a fixed rate, so Circle's truncating divide
+// lands on the divisor we actually want whatever the core clock reads at boot.
+
+
 // The board's buttons, and what the NES sees them as.
 static const struct
 {
@@ -65,7 +70,7 @@ CKernel::CKernel (void)
 :	m_Timer (&m_Interrupt),
 	m_Display (&m_Interrupt, ST7789_DC_PIN, ST7789_RESET_PIN, ST7789_BACKLIGHT_PIN,
 		   ST7789_CS_PIN, ST7789_WIDTH, ST7789_HEIGHT,
-		   ST7789_CLOCK_SPEED, ST7789_CPOL, ST7789_CPHA,
+		   ST7789_TARGET_CLOCK, ST7789_CPOL, ST7789_CPHA,
 		   ST7789_MADCTL, ST7789_SWAP_COLOR_BYTES),
 	m_EMMC (&m_Interrupt, &m_Timer, &m_ActLED)
 {
@@ -229,6 +234,15 @@ void CKernel::WaitForNextFrame (void)
 		m_nNextFrameTime = nNow;
 	}
 
+	// Hold the bus at its target rate. The core clock moves on its own and
+	// Circle's divisor does not follow it, so without this the panel ends up
+	// overdriven whenever the core boosts. Once a second is often enough and
+	// keeps the mailbox call out of the frame budget.
+	if (m_nFramesThisSecond == 0)
+	{
+		m_Display.SetTargetClock (ST7789_TARGET_CLOCK);
+	}
+
 	// Count what is actually achieved. The pacing above should give 60, and if
 	// it does not this is the number that says so.
 	m_nFramesThisSecond++;
@@ -345,8 +359,99 @@ int CKernel::SoundBufferAvail (void)
 	return m_pSound->GetQueueSizeFrames () - m_pSound->GetQueueFramesAvail ();
 }
 
+// Up is read once, straight after the pull-ups are enabled. Nothing is written
+// anywhere and no flag survives a boot, so this cannot leave the device stuck
+// in a mode it will not come out of: power cycle without holding Up and it is
+// an emulator again.
+boolean CKernel::UpHeldAtBoot (void)
+{
+	// Let the pull-up settle before believing the pin.
+	m_Timer.MsDelay (10);
+
+	for (unsigned i = 0; i < GPIOButtonCount; i++)
+	{
+		if (   s_ButtonMap[i].nPin == GPIO_BUTTON_UP
+		    && m_ButtonPins[i].Read () == LOW)
+		{
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+// Present the SD card to a PC as a mass storage device.
+//
+// The file system is never mounted in this mode, so there is no question of
+// both sides holding the same FAT. There is no frame deadline either, which
+// matters because CUSBMSDGadget::Update() does the actual block I/O rather
+// than just pumping state - it cannot be called from a 16 ms game loop.
+TShutdownMode CKernel::RunUSBGadget (void)
+{
+	C2DGraphics Graphics (&m_Display);
+	if (Graphics.Initialize ())
+	{
+		Graphics.ClearScreen (COLOR2D (0, 0, 40));
+		Graphics.DrawText (m_Display.GetWidth () / 2, 90, COLOR2D (140, 190, 255),
+				   "USB transfer mode", C2DGraphics::AlignCenter);
+		Graphics.DrawText (m_Display.GetWidth () / 2, 120, COLOR2D (200, 200, 200),
+				   "SD card is available to the PC", C2DGraphics::AlignCenter);
+		Graphics.DrawText (m_Display.GetWidth () / 2, 150, COLOR2D (200, 200, 200),
+				   "Eject there, then press START", C2DGraphics::AlignCenter);
+		Graphics.UpdateDisplay ();
+
+		// The frame goes out over DMA asynchronously. Let it finish before
+		// touching USB: halting or reconfiguring mid-transfer leaves half a
+		// screen, which is what a failed gadget start looked like.
+		m_Display.WaitForTransfer ();
+	}
+
+	// Heap allocated and never freed on purpose: ~CUSBMSDGadget() is an
+	// assert(0), so the gadget must outlive every path out of here. Leaking it
+	// costs nothing, as the only way out is a reboot.
+	CUSBMSDGadget *pGadget = new CUSBMSDGadget (&m_Interrupt, &m_EMMC,
+						    USB_GADGET_VID, USB_GADGET_PID);
+	if (pGadget == 0 || !pGadget->Initialize ())
+	{
+		if (Graphics.Initialize ())
+		{
+			Graphics.DrawText (m_Display.GetWidth () / 2, 190, COLOR2D (255, 120, 120),
+					   "USB gadget failed to start",
+					   C2DGraphics::AlignCenter);
+			Graphics.UpdateDisplay ();
+			m_Display.WaitForTransfer ();
+		}
+
+		for (;;)
+		{
+			m_ActLED.Blink (1);
+			m_Timer.MsDelay (1000);
+		}
+	}
+
+	for (;;)
+	{
+		pGadget->UpdatePlugAndPlay ();
+		pGadget->Update ();
+
+		if (ReadPad () & NES_PAD_START)
+		{
+			// Reboot rather than carry on: the emulator would have to mount
+			// a card the PC may have just rewritten underneath it.
+			return ShutdownReboot;
+		}
+	}
+
+	return ShutdownHalt;
+}
+
 TShutdownMode CKernel::Run (void)
 {
+	if (UpHeldAtBoot ())
+	{
+		return RunUSBGadget ();
+	}
+
 #if ST7789_TEST_PATTERN
 	DrawTestPattern ();
 

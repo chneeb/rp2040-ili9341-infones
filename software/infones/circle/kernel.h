@@ -15,6 +15,7 @@
 #include <circle/gpiopin.h>
 #include <circle/types.h>
 #include <circle/sound/pwmsoundbasedevice.h>
+#include <circle/usb/gadget/usbmsdgadget.h>
 #include <SDCard/emmc.h>
 #include <fatfs/ff.h>
 
@@ -71,6 +72,10 @@ private:
 	void DrawTestPattern (void);
 #endif
 	void InitializeButtons (void);
+	// Held at power-on, Up puts the device into USB mass storage mode instead
+	// of running the emulator, so the card can be read from a PC.
+	boolean UpHeldAtBoot (void);
+	TShutdownMode RunUSBGadget (void);
 	void UpdateVolume (void);
 
 	// do not change this order

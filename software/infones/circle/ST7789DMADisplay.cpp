@@ -9,6 +9,7 @@
 #include "ST7789DMADisplay.h"
 
 #include <circle/timer.h>
+#include <circle/machineinfo.h>
 #include <circle/util.h>
 #include <assert.h>
 
@@ -58,6 +59,7 @@ CST7789DMADisplay::CST7789DMADisplay (CInterruptSystem *pInterrupt,
 	// bDMAChannelLite FALSE: the header asks for it at very high speeds, and
 	// 62.5 MHz is the fastest divisor this core allows.
 	m_SPIMaster (pInterrupt, nClockSpeed, CPOL, CPHA, FALSE),
+	m_nCoreAtInit (CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE)),
 	m_pFrameBuffer (0),
 	m_pDummyRXBuffer (0),
 	m_bTransferActive (FALSE),
@@ -262,6 +264,32 @@ void CST7789DMADisplay::ClearPanel (void)
 //
 // Frame transfers.
 //
+
+// Hold the bus at a fixed rate while the core clock moves under it.
+//
+// Circle fixes the SPI divisor once and never revisits it, so the rate that
+// comes out is the current core over that old divisor - which is why the panel
+// ends up overdriven whenever the core boosts. Re-aiming it is not simply a
+// matter of calling SetClock again either: CSPIMasterDMA divides by the core
+// rate *it* captured when it was constructed, which is equally stale. So the
+// request is scaled by how far the core has moved since.
+void CST7789DMADisplay::SetTargetClock (unsigned nTargetHz)
+{
+	unsigned nCoreNow = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
+	if (nCoreNow == 0 || m_nCoreAtInit == 0 || m_bTransferActive)
+	{
+		return;
+	}
+
+	u64 nRequest = (u64) nTargetHz * m_nCoreAtInit / nCoreNow;
+	if (nRequest == 0)
+	{
+		return;
+	}
+
+	m_nClockSpeed = (unsigned) nRequest;
+	m_SPIMaster.SetClock (m_nClockSpeed);
+}
 
 void CST7789DMADisplay::WaitForTransfer (void)
 {

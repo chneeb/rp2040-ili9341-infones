@@ -35,10 +35,11 @@
 // and 256 to 320 is exactly 4:5, so every fourth pixel is doubled and nothing
 // else shifts.
 //
-// It costs bandwidth: 153,600 bytes a frame against 122,880, which is 19.7 ms
-// against 15.7 at 62.5 MHz. The budget is 16.64 ms, so filling the width needs
-// a faster SPI clock - see ST7789_CLOCK_SPEED below, and note that it needs a
-// matching core_freq in config.txt.
+// It costs bandwidth: 153,600 bytes a frame against 122,880, which at 66.7 MHz
+// is 18.4 ms against 14.7. The budget is 16.64 ms, so a full width frame does
+// not fit in one - InfoNES_LoadFrame() drops a frame when the bus is still
+// busy, which halves the picture rate rather than the game speed. See
+// ST7789_CLOCK_DIVISOR below.
 //
 // Set to 0 to go back to a pillarboxed 256 with black bars either side.
 #define NES_FILL_WIDTH		1
@@ -88,32 +89,18 @@
 #define ST7789_CPOL		0
 #define ST7789_CPHA		0
 
-// Circle divides the *measured* core clock by this and truncates, so the rate
-// that comes out depends on core_freq in config.txt:
+// The rate the panel is driven at, held constant.
 //
-//   core_freq=250  ->  125, 62.5, 41.7 MHz
-//   core_freq=400  ->  200, 100, 66.7, 50 MHz
+// This has to be actively held, not just requested once. Circle fixes the SPI
+// divisor at init and never revisits it, so the rate that comes out is the
+// *current* core clock over that old divisor - and the core moves on its own,
+// roughly 250 MHz idle and 400 under load. A divisor of 4 is 62.5 MHz at core
+// 250 and 100 MHz at core 400, which is more than this panel will take: the
+// picture degrades until the core drops back.
 //
-// A full width frame is 153,600 bytes and needs at least 74 MHz to fit in the
-// 16.64 ms budget, so NES_FILL_WIDTH wants core_freq=400 and 100 MHz.
-//
-// core_freq=350 was tried and the firmware ignored it, with and without
-// force_turbo. 400 is the native turbo rate, so it stands a better chance.
-//
-// **Pin both core_freq and core_freq_min.** The core clock is dynamic - around
-// 250 idle and 400 under load - and Circle measures it once at init, computes
-// the divisor and never looks again. An unpinned core that boosts afterwards
-// silently multiplies the bus rate, which is the likeliest reason 125 MHz once
-// looked intermittent rather than simply too fast.
-//
-// WARNING: asking for 87.5 MHz without setting core_freq does not give 62.5 -
-// it truncates 250/87.5 to a divisor of 2 and runs the bus at 125 MHz. The
-// config.txt line is not optional.
-//
-// All of this is far beyond what the ST7789VW is specified for. If the picture
-// tears, flickers or shows intermittent noise, drop back a step - a marginal
-// clock looks like a wiring fault rather than a clock problem.
-#define ST7789_CLOCK_SPEED	100000000	// core 400 pinned, gives 400/4
+// CKernel::WaitForNextFrame() re-aims the bus once a second, so the rate stays
+// here whatever the core is doing. 62.5 MHz has been reliable throughout.
+#define ST7789_TARGET_CLOCK	62500000
 
 // The GamePi20 has the panel mounted upside down. MY | MV | ML turns the
 // picture around at no cost; 0x70 is the same layout the right way up.

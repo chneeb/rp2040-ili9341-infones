@@ -30,6 +30,18 @@
 // also frees the CPU time the mixing took, and leaves GPIO 18 undriven.
 #define SOUND_ENABLED		1
 
+// USB vendor and product ID for the mass storage gadget.
+//
+// Circle ships USB_GADGET_VENDOR_ID as 0x0000 on purpose - it is not a valid
+// ID and CDWUSBGadget::Initialize() rejects it outright, so a gadget with the
+// default simply never starts. One has to be supplied.
+//
+// 0x1209 is pid.codes, a registered VID that hands out PIDs for open source
+// and hobby projects precisely so they do not have to squat on someone else's.
+// 0x0001 is its reserved test PID.
+#define USB_GADGET_VID		0x1209
+#define USB_GADGET_PID		0x0001
+
 // Volume as a percentage. 50 is unity - the plain average of the five APU
 // channels that the reference ports use - and is the default. 100 is twice
 // that and will clip the loudest passages. A single NES channel only ever

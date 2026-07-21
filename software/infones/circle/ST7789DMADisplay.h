@@ -69,6 +69,10 @@ public:
 	/// \return Is a frame still going out?
 	boolean IsBusy (void) const	{ return m_bTransferActive; }
 
+	/// \brief Re-aim the bus at nTargetHz against the core clock as it is now.
+	/// \note Only safe when no transfer is in flight.
+	void SetTargetClock (unsigned nTargetHz);
+
 private:
 	void Command (u8 uchByte);
 	void Data (u8 uchByte);
@@ -94,6 +98,8 @@ private:
 	CGPIOPin      m_ResetPin;
 	CGPIOPin      m_BackLightPin;
 	CGPIOPin      m_CSPin;
+
+	unsigned m_nCoreAtInit;
 
 	u8 *m_pFrameBuffer;	// the picture being sent, owned here
 	u8 *m_pDummyRXBuffer;	// StartWriteRead() insists on a read buffer

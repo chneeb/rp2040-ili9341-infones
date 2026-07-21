@@ -35,6 +35,8 @@ DEFINE	+= -include $(shell pwd)/PicoCompat.h
 DEFINE	+= -DNES_FIRST_SCANLINE=0 -DNES_LAST_SCANLINE=239
 
 LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
+	  $(CIRCLEHOME)/lib/usb/gadget/libusbgadget.a \
+	  $(CIRCLEHOME)/lib/usb/libusb.a \
 	  $(CIRCLEHOME)/addon/SDCard/libsdcard.a \
 	  $(CIRCLEHOME)/lib/fs/libfs.a \
 	  $(CIRCLEHOME)/lib/sound/libsound.a \

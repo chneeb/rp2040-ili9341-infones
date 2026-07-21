@@ -148,35 +148,28 @@ void CRomMenu::Draw (void)
 	// core clock and truncates, so the rate that comes out depends on what the
 	// firmware did with core_freq - which is worth being able to read rather
 	// than assume.
-	// The divisor was fixed at init from the core clock as it was then, and
-	// Circle never revisits it. The core clock does move - around 250 idle and
-	// 400 under load - so the bus rate now is the *current* core over that old
-	// divisor, not over a freshly computed one.
+	// The core clock is shown because it moves on its own; the bus rate is the
+	// target, because CKernel::WaitForNextFrame() re-aims the divisor once a
+	// second to hold it there whatever the core is doing.
 	unsigned nCore = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
-	unsigned nCoreAtInit = GamePi20_GetCoreClockAtInit ();
-
-	unsigned nDivisor = nCoreAtInit / ST7789_CLOCK_SPEED;
-	if (nDivisor == 0)
-	{
-		nDivisor = 1;
-	}
+	unsigned nSPI = ST7789_TARGET_CLOCK;
 
 	CString Info;
 #if !SOUND_ENABLED
 	Info.Format ("core %u  spi %u  %upx  %ufps  sound off",
-		     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH,
+		     nCore / 1000000, nSPI / 1000000, NES_OUT_WIDTH,
 		     GamePi20_GetMeasuredFPS ());
 #else
 	if (GamePi20_IsMuted ())
 	{
 		Info.Format ("core %u  spi %u  %upx  %ufps  muted",
-			     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH,
+			     nCore / 1000000, nSPI / 1000000, NES_OUT_WIDTH,
 			     GamePi20_GetMeasuredFPS ());
 	}
 	else
 	{
 		Info.Format ("core %u  spi %u  %upx  %ufps  vol %u",
-			     nCore / 1000000, nCore / nDivisor / 1000000, NES_OUT_WIDTH,
+			     nCore / 1000000, nSPI / 1000000, NES_OUT_WIDTH,
 			     GamePi20_GetMeasuredFPS (), GamePi20_GetVolumeLevel ());
 	}
 #endif
