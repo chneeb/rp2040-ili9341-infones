@@ -632,8 +632,18 @@ scratch work RAM and set it every frame — flushing on it would rewrite an
 identical 8 KB forever. Comparing against what is already on the card costs a
 few microseconds at 0.2 Hz and writes only on a real change.
 
-A short or unreadable `.sav` (a power cut mid-flush) starts the cart blank
-rather than from half a save.
+**Written to a `.tmp` and swapped in, never over the `.sav` in place.** The
+flush is periodic and unannounced, so the machine is most likely to be switched
+off during exactly this. Writing in place means truncating a good save and then
+taking milliseconds to replace it — power off in between and everything is
+gone. Building beside it makes the worst case a throwaway `.tmp` and a `.sav`
+a few seconds stale.
+
+The swap is `f_unlink` then `f_rename` (FatFs will not rename onto an existing
+name), so there is still an instant with no `.sav`. It is metadata rather than
+8 KB of data — microseconds against milliseconds — and `LoadSRAM()` falls back
+to the `.tmp` to cover it. A file of the wrong length from either name is
+rejected rather than half loaded.
 
 The flush sits between the frame present and `GamePi20_WaitForNextFrame()`, so
 it comes out of the slack already in the frame rather than adding to it, and

@@ -279,8 +279,10 @@ void InfoNES_ReleaseRom (void)
 
 #define SAVE_PATH_LENGTH	256
 
-// The .sav path for the game now running, empty when none is loaded.
+// The .sav path for the game now running, empty when none is loaded, and the
+// .tmp the new contents are built in first - see SaveSRAM().
 static char s_SavePath[SAVE_PATH_LENGTH];
+static char s_TempPath[SAVE_PATH_LENGTH];
 
 // What is currently on the card, so a flush can tell whether anything actually
 // changed. SRAMwritten is no use for this on its own: it is set by any write to
@@ -293,6 +295,7 @@ static BYTE s_SavedSRAM[SRAM_SIZE];
 static void MakeSavePath (const char *pszRom)
 {
 	s_SavePath[0] = '\0';
+	s_TempPath[0] = '\0';
 
 	size_t nLength = strlen (pszRom);
 	if (nLength < 5 || nLength >= SAVE_PATH_LENGTH)
@@ -308,6 +311,28 @@ static void MakeSavePath (const char *pszRom)
 
 	memcpy (s_SavePath, pszRom, nLength - 4);
 	strcpy (s_SavePath + nLength - 4, ".sav");
+
+	memcpy (s_TempPath, pszRom, nLength - 4);
+	strcpy (s_TempPath + nLength - 4, ".tmp");
+}
+
+// Read SRAM_SIZE bytes from pszPath into SRAM. Anything shorter is a write cut
+// short by a power off, and is rejected rather than half loaded.
+static boolean ReadSaveFile (const char *pszPath)
+{
+	FIL File;
+	if (f_open (&File, pszPath, FA_READ) != FR_OK)
+	{
+		return FALSE;
+	}
+
+	UINT nRead;
+	boolean bOK =    f_read (&File, SRAM, SRAM_SIZE, &nRead) == FR_OK
+		      && nRead == SRAM_SIZE;
+
+	f_close (&File);
+
+	return bOK;
 }
 
 // Called once the machine is reset, so ROM_SRAM is valid and InfoNES_ReadRom
@@ -323,33 +348,35 @@ static void LoadSRAM (void)
 		return;
 	}
 
-	FIL File;
-	if (f_open (&File, s_SavePath, FA_READ) != FR_OK)
+	// The .tmp is the fallback, not the preference: it is only the newer of the
+	// two in the instant between the unlink and the rename in SaveSRAM(), and
+	// in that instant there is no .sav to prefer anyway.
+	if (   !ReadSaveFile (s_SavePath)
+	    && !ReadSaveFile (s_TempPath))
 	{
-		// No save yet. Not an error - the first one will create it.
+		// Either no save yet, which is not an error and the first flush will
+		// create one, or both copies are unreadable. Start the cart blank.
+		memset (SRAM, 0, SRAM_SIZE);
+
+		SRAMwritten = false;
+
 		return;
 	}
 
-	UINT nRead;
-	if (   f_read (&File, SRAM, SRAM_SIZE, &nRead) == FR_OK
-	    && nRead == SRAM_SIZE)
-	{
-		memcpy (s_SavedSRAM, SRAM, SRAM_SIZE);
-	}
-	else
-	{
-		// A short or unreadable file is a truncated write from a power cut
-		// mid-flush. Start the cart from blank rather than from half a save.
-		memset (SRAM, 0, SRAM_SIZE);
-	}
-
-	f_close (&File);
+	memcpy (s_SavedSRAM, SRAM, SRAM_SIZE);
 
 	SRAMwritten = false;
 }
 
 // Write the battery out if it differs from what is on the card. Returns
 // quickly and does nothing at all in the common case.
+//
+// Built in a .tmp and swapped in, never written over the .sav in place. The
+// flush is periodic and unannounced, so the machine is most likely to be
+// switched off during exactly this - and writing in place means truncating a
+// good save and then taking milliseconds to replace it, which loses everything
+// if the power goes in between. Building beside it means the worst case is a
+// throwaway .tmp and a .sav that is merely a few seconds stale.
 static void SaveSRAM (void)
 {
 	if (   !ROM_SRAM
@@ -360,19 +387,39 @@ static void SaveSRAM (void)
 	}
 
 	FIL File;
-	if (f_open (&File, s_SavePath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	if (f_open (&File, s_TempPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
 	{
 		return;
 	}
 
 	UINT nWritten;
-	if (   f_write (&File, SRAM, SRAM_SIZE, &nWritten) == FR_OK
-	    && nWritten == SRAM_SIZE)
+	boolean bOK =    f_write (&File, SRAM, SRAM_SIZE, &nWritten) == FR_OK
+		      && nWritten == SRAM_SIZE;
+
+	// The close is what commits the data and the length; a failure here means
+	// the .tmp is not sound, so the .sav it would replace is left alone.
+	bOK = f_close (&File) == FR_OK && bOK;
+
+	if (!bOK)
 	{
-		memcpy (s_SavedSRAM, SRAM, SRAM_SIZE);
+		return;
 	}
 
-	f_close (&File);
+	// f_rename will not overwrite, so the old one goes first. This is the only
+	// window where the .sav is missing, and it is metadata rather than 8 KB of
+	// data - microseconds against milliseconds. LoadSRAM() falls back to the
+	// .tmp for it.
+	f_unlink (s_SavePath);
+
+	if (f_rename (s_TempPath, s_SavePath) != FR_OK)
+	{
+		// The .tmp still holds the new contents and LoadSRAM() will find it,
+		// but the shadow must not claim the save is on the card under its
+		// proper name, or the next flush would skip the retry.
+		return;
+	}
+
+	memcpy (s_SavedSRAM, SRAM, SRAM_SIZE);
 
 	SRAMwritten = false;
 }
