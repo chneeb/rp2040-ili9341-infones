@@ -8,32 +8,41 @@
 //
 #include "ST7789DMADisplay.h"
 
+// For ST7789_CLOCK_DIVISOR and its ceiling, used by TargetClock() below. The
+// rest of this driver takes its configuration through the constructor; the
+// clock cannot, because the value is needed to build the object in the first
+// place.
+#include "DisplayConfig.h"
+
 #include <circle/timer.h>
 #include <circle/machineinfo.h>
 #include <circle/util.h>
 #include <assert.h>
 
-#define ST7789_SWRESET	0x01
-#define ST7789_SLPOUT	0x11
-#define ST7789_INVON	0x21
-#define ST7789_DISPON	0x29
-#define ST7789_CASET	0x2A
-#define ST7789_RASET	0x2B
-#define ST7789_RAMWR	0x2C
-#define ST7789_MADCTL	0x36
-#define ST7789_COLMOD	0x3A
-#define ST7789_RAMCTRL	0xB0
-#define ST7789_FRMCTR2	0xB2
-#define ST7789_GCTRL	0xB7
-#define ST7789_VCOMS	0xBB
-#define ST7789_LCMCTRL	0xC0
-#define ST7789_VDVVRHEN	0xC2
-#define ST7789_VRHS	0xC3
-#define ST7789_VDVS	0xC4
-#define ST7789_FRCTRL2	0xC6
-#define ST7789_PWCTRL1	0xD0
-#define ST7789_GMCTRP1	0xE0
-#define ST7789_GMCTRN1	0xE1
+// Command opcodes. The CMD_ infix keeps them clear of the panel *settings* in
+// DisplayConfig.h, which share the ST7789_ prefix - ST7789_MADCTL was both the
+// 0x36 opcode here and the 0xB0 value there until this was split.
+#define ST7789_CMD_SWRESET	0x01
+#define ST7789_CMD_SLPOUT	0x11
+#define ST7789_CMD_INVON	0x21
+#define ST7789_CMD_DISPON	0x29
+#define ST7789_CMD_CASET	0x2A
+#define ST7789_CMD_RASET	0x2B
+#define ST7789_CMD_RAMWR	0x2C
+#define ST7789_CMD_MADCTL	0x36
+#define ST7789_CMD_COLMOD	0x3A
+#define ST7789_CMD_RAMCTRL	0xB0
+#define ST7789_CMD_FRMCTR2	0xB2
+#define ST7789_CMD_GCTRL	0xB7
+#define ST7789_CMD_VCOMS	0xBB
+#define ST7789_CMD_LCMCTRL	0xC0
+#define ST7789_CMD_VDVVRHEN	0xC2
+#define ST7789_CMD_VRHS	0xC3
+#define ST7789_CMD_VDVS	0xC4
+#define ST7789_CMD_FRCTRL2	0xC6
+#define ST7789_CMD_PWCTRL1	0xD0
+#define ST7789_CMD_GMCTRP1	0xE0
+#define ST7789_CMD_GMCTRN1	0xE1
 
 CST7789DMADisplay::CST7789DMADisplay (CInterruptSystem *pInterrupt,
 				      unsigned nDCPin, unsigned nResetPin,
@@ -57,7 +66,7 @@ CST7789DMADisplay::CST7789DMADisplay (CInterruptSystem *pInterrupt,
 	// SPI peripheral toggle it per transfer would break the RAMWR stream at
 	// every chunk boundary.
 	// bDMAChannelLite FALSE: the header asks for it at very high speeds, and
-	// 62.5 MHz is the fastest divisor this core allows.
+	// this bus reaches them - see TargetClock(), which can hand over 87.5 MHz.
 	m_SPIMaster (pInterrupt, nClockSpeed, CPOL, CPHA, FALSE),
 	m_nCoreAtInit (CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE)),
 	m_pFrameBuffer (0),
@@ -129,15 +138,15 @@ void CST7789DMADisplay::SetWindow (unsigned x0, unsigned y0, unsigned x1, unsign
 	assert (x0 <= x1 && x1 < m_nWidth);
 	assert (y0 <= y1 && y1 < m_nHeight);
 
-	Command (ST7789_CASET);
+	Command (ST7789_CMD_CASET);
 	Data (x0 >> 8); Data (x0 & 0xFF);
 	Data (x1 >> 8); Data (x1 & 0xFF);
 
-	Command (ST7789_RASET);
+	Command (ST7789_CMD_RASET);
 	Data (y0 >> 8); Data (y0 & 0xFF);
 	Data (y1 >> 8); Data (y1 & 0xFF);
 
-	Command (ST7789_RAMWR);
+	Command (ST7789_CMD_RAMWR);
 }
 
 boolean CST7789DMADisplay::Initialize (void)
@@ -175,46 +184,46 @@ boolean CST7789DMADisplay::Initialize (void)
 		CTimer::SimpleMsDelay (50);
 	}
 
-	Command (ST7789_SWRESET);
+	Command (ST7789_CMD_SWRESET);
 	CTimer::SimpleMsDelay (150);
 
 	// The orientation, unlike in Circle's driver, comes from the caller. The
 	// GamePi20 has the panel mounted upside down and wants 0xB0 rather than
 	// the usual 0x70.
-	Command (ST7789_MADCTL);
+	Command (ST7789_CMD_MADCTL);
 	Data (m_uchMADCTL);
 
-	Command (ST7789_FRMCTR2);
+	Command (ST7789_CMD_FRMCTR2);
 	Data (0x0C); Data (0x0C); Data (0x00); Data (0x33); Data (0x33);
 
-	Command (ST7789_COLMOD);
+	Command (ST7789_CMD_COLMOD);
 	Data (0x05);
 
-	Command (ST7789_RAMCTRL);
+	Command (ST7789_CMD_RAMCTRL);
 	Data (0x00);
 	Data (GetColorModel () == RGB565_BE ? 0xF0 : 0xF8);
 
-	Command (ST7789_GCTRL);		Data (0x14);
-	Command (ST7789_VCOMS);		Data (0x37);
-	Command (ST7789_LCMCTRL);	Data (0x2C);
-	Command (ST7789_VDVVRHEN);	Data (0x01);
-	Command (ST7789_VRHS);		Data (0x12);
-	Command (ST7789_VDVS);		Data (0x20);
-	Command (ST7789_PWCTRL1);	Data (0xA4); Data (0xA1);
-	Command (ST7789_FRCTRL2);	Data (0x0F);
+	Command (ST7789_CMD_GCTRL);		Data (0x14);
+	Command (ST7789_CMD_VCOMS);		Data (0x37);
+	Command (ST7789_CMD_LCMCTRL);	Data (0x2C);
+	Command (ST7789_CMD_VDVVRHEN);	Data (0x01);
+	Command (ST7789_CMD_VRHS);		Data (0x12);
+	Command (ST7789_CMD_VDVS);		Data (0x20);
+	Command (ST7789_CMD_PWCTRL1);	Data (0xA4); Data (0xA1);
+	Command (ST7789_CMD_FRCTRL2);	Data (0x0F);
 
 	static const u8 GammaP[] = { 0xD0, 0x04, 0x0D, 0x11, 0x13, 0x2B, 0x3F,
 				     0x54, 0x4C, 0x18, 0x0D, 0x0B, 0x1F, 0x23 };
-	Command (ST7789_GMCTRP1);
+	Command (ST7789_CMD_GMCTRP1);
 	for (unsigned i = 0; i < sizeof GammaP; i++) Data (GammaP[i]);
 
 	static const u8 GammaN[] = { 0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F,
 				     0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23 };
-	Command (ST7789_GMCTRN1);
+	Command (ST7789_CMD_GMCTRN1);
 	for (unsigned i = 0; i < sizeof GammaN; i++) Data (GammaN[i]);
 
-	Command (ST7789_INVON);
-	Command (ST7789_SLPOUT);
+	Command (ST7789_CMD_INVON);
+	Command (ST7789_CMD_SLPOUT);
 	CTimer::SimpleMsDelay (100);
 
 	// Black out the panel's memory before anything is shown, then turn the
@@ -223,7 +232,7 @@ boolean CST7789DMADisplay::Initialize (void)
 	memset (m_pFrameBuffer, 0, m_nWidth * m_nHeight * 2);
 	ClearPanel ();
 
-	Command (ST7789_DISPON);
+	Command (ST7789_CMD_DISPON);
 	CTimer::SimpleMsDelay (100);
 
 	if (m_nBackLightPin != None)
@@ -273,6 +282,34 @@ void CST7789DMADisplay::ClearPanel (void)
 // matter of calling SetClock again either: CSPIMasterDMA divides by the core
 // rate *it* captured when it was constructed, which is equally stale. So the
 // request is scaled by how far the core has moved since.
+unsigned CST7789DMADisplay::TargetClock (void)
+{
+	// Read once and kept. Re-reading would defeat the whole arrangement: the
+	// core drifts, and a target that drifted with it is exactly what
+	// SetTargetClock() below exists to correct for.
+	static unsigned s_nTarget = 0;
+
+	if (s_nTarget == 0)
+	{
+		unsigned nCore = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
+		if (nCore == 0)
+		{
+			nCore = ST7789_CLOCK_CORE_ASSUMED;
+		}
+
+		s_nTarget = nCore / ST7789_CLOCK_DIVISOR;
+
+		// An unpinned core caught boosting at boot divides to 100 MHz, which
+		// this panel will not take. Better a slower picture than a bad one.
+		if (s_nTarget > ST7789_CLOCK_CEILING)
+		{
+			s_nTarget = ST7789_CLOCK_CEILING;
+		}
+	}
+
+	return s_nTarget;
+}
+
 void CST7789DMADisplay::SetTargetClock (unsigned nTargetHz)
 {
 	unsigned nCoreNow = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);

@@ -1,0 +1,50 @@
+#
+# Boot configuration for the GamePi20 port. Copy to the root of the SD card
+# alongside bootcode.bin, start.elf, fixup.dat, cmdline.txt and kernel.img.
+#
+# This is circle/boot/config32.txt with the core clock pinned. Keep it in step
+# if the Circle submodule moves.
+#
+
+arm_64bit=0
+initial_turbo=0
+
+#
+# The core clock, and with it the rate the display bus runs at.
+#
+# The firmware does not hold the core still on its own - it is roughly 250 MHz
+# idle and 400 under load. Pinning it matters because the panel's SPI rate is
+# derived from it: ST7789_CLOCK_DIVISOR in DisplayConfig.h divides the core
+# clock as measured once at boot, and the result is then held there for the
+# rest of the run.
+#
+#   core_freq=250   ->  62.5 MHz bus  ->  19.7 ms/frame  ->  30 Hz picture
+#   core_freq=350   ->  87.5 MHz bus  ->  14.0 ms/frame  ->  60 Hz picture
+#
+# So this is the one place the picture rate is set, and changing it needs no
+# rebuild - boot holding Up to bring the card up as a USB drive, edit this
+# line, power cycle. 250 is the gentler setting on the battery; 350 is the
+# smoother picture. Either way the game, its input and its sound run at the
+# full 60 Hz, because InfoNES_LoadFrame() drops a picture rather than let the
+# bus hold the emulator up.
+#
+# Above 350 gains nothing: the divisor would land the bus past 90 MHz, and
+# ST7789_CLOCK_CEILING caps it there because 100 MHz visibly degrades this
+# panel.
+#
+# THESE TWO LINES MUST STAY ABOVE THE [pi4] AND [cm4] MARKERS BELOW. Anything
+# after a [model] filter applies only to that model, so a core_freq at the end
+# of the file is silently ignored on a Zero - which cost several rounds of
+# debugging once already, and looked exactly like the firmware refusing to
+# honour core_freq at all.
+#
+core_freq=350
+core_freq_min=350
+
+[pi4]
+kernel=kernel7l.img
+armstub=armstub7-rpi4.bin
+max_framebuffers=2
+
+[cm4]
+otg_mode=1

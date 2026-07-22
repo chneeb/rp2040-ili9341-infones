@@ -73,6 +73,13 @@ public:
 	/// \note Only safe when no transfer is in flight.
 	void SetTargetClock (unsigned nTargetHz);
 
+	/// \brief The rate the panel should run at: the core clock as measured at
+	///	   boot, over ST7789_CLOCK_DIVISOR, capped at ST7789_CLOCK_CEILING.
+	/// \note Worked out on the first call and kept. That call is this class's
+	///	  own constructor argument, so the reading is taken before anything
+	///	  has had a chance to load the core and move it off its pinned rate.
+	static unsigned TargetClock (void);
+
 private:
 	void Command (u8 uchByte);
 	void Data (u8 uchByte);

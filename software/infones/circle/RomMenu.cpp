@@ -152,7 +152,7 @@ void CRomMenu::Draw (void)
 	// target, because CKernel::WaitForNextFrame() re-aims the divisor once a
 	// second to hold it there whatever the core is doing.
 	unsigned nCore = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
-	unsigned nSPI = ST7789_TARGET_CLOCK;
+	unsigned nSPI = CST7789DMADisplay::TargetClock ();
 
 	CString Info;
 #if !SOUND_ENABLED

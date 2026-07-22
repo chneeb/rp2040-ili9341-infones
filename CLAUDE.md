@@ -273,7 +273,8 @@ Circle's Rules.mk compiles in place, so this leaves `.o`/`.d` files next to the
 shared sources. They are gitignored.
 
 SD card: `bootcode.bin`, `start.elf`, `fixup.dat` (from `make` in
-`circle/boot`), `config.txt` (a copy of `circle/boot/config32.txt`),
+`circle/boot`), `config.txt` (copy `boot/config.txt` from this repo, **not**
+`circle/boot/config32.txt` — it is that file plus the pinned core clock),
 `cmdline.txt`, `kernel.img`, and the games in a `nes/` directory.
 
 `config.txt` also pins the core clock (`core_freq=250`, `core_freq_min=250`,
@@ -340,15 +341,29 @@ It costs bandwidth. Against the 16.64 ms budget of one frame:
 
 | | frame time | |
 |---|---|---|
-| 320 px @ 62.5 MHz (default) | 19.7 ms | every second frame - 30 Hz picture |
-| 320 px @ 87.5 MHz | 14.0 ms | every frame - 60 Hz picture |
+| 320 px @ 62.5 MHz | 19.7 ms | every second frame - 30 Hz picture |
+| 320 px @ 87.5 MHz (default) | 14.0 ms | every frame - 60 Hz picture |
 | 320 px @ 100 MHz | 12.3 ms | every frame, but degrades the panel |
 
-At the default the picture runs at 30 Hz while the game, input and audio stay at
-60. 60 Hz picture needs about 74 MHz (naively; the per-frame scale and copy eat
-into the window, so more like 80+), which means pinning the core higher -
-`core_freq=350` and `ST7789_TARGET_CLOCK` of 87500000 gives divisor 4 - at a
-cost in battery. 100 MHz has the bandwidth but visibly degrades this panel.
+**The picture rate is set from `boot/config.txt`, not from a rebuild.** The bus
+rate is `ST7789_CLOCK_DIVISOR` (4) into the core clock as measured once at
+boot, so `core_freq` is the only knob:
+
+| `core_freq` | bus | picture |
+|---|---|---|
+| 250 | 62.5 MHz | 30 Hz, gentler on the battery |
+| 350 (shipped) | 87.5 MHz | 60 Hz |
+
+Boot holding Up for USB transfer mode, edit the line, power cycle. No toolchain
+involved. `ST7789_CLOCK_CEILING` caps the result at 90 MHz whatever `core_freq`
+says, because an unpinned core caught boosting at boot would divide to exactly
+the 100 MHz that degrades this panel.
+
+The derivation is `CST7789DMADisplay::TargetClock()`, which reads the core
+**once** and caches it — the first call is the display's own constructor
+argument, before anything has had a chance to load the core and move it. A
+target that drifted with the core is precisely what `SetTargetClock()` exists
+to correct for, so re-reading would cancel the whole arrangement out.
 
 **The display rate looks after itself.** `InfoNES_LoadFrame()` drops a frame if
 the previous one is still going out, rather than waiting for the bus. Waiting
@@ -364,15 +379,16 @@ core 400, and 100 degrades this panel until the core drops back.
 
 Two things keep it in hand, and either would do on its own:
 
-- **`config.txt` pins the core** at 250 with `core_freq=250` and
-  `core_freq_min=250`. **These must sit above the `[pi4]`/`[cm4]` markers.**
+- **`config.txt` pins the core**, and `boot/config.txt` in this repo is the
+  copy to use — it has `core_freq`/`core_freq_min` already in the right place.
+  **These must sit above the `[pi4]`/`[cm4]` markers.**
   Anything after a `[model]` filter applies only to that model, so a `core_freq`
   at the end of the file is silently ignored on a Zero - which is exactly what
   happened for several rounds here, and is why an earlier version of this note
   wrongly claimed the firmware ignores `core_freq` altogether. It does not; it
   was in the wrong section.
 - **`CST7789DMADisplay::SetTargetClock()` re-aims the bus** once a second from
-  `CKernel::WaitForNextFrame()`, holding it at `ST7789_TARGET_CLOCK` whatever
+  `CKernel::WaitForNextFrame()`, holding it at `TargetClock()` whatever
   the core is doing. Re-requesting the rate is not enough by itself:
   `CSPIMasterDMA` divides by the core rate it captured at construction, equally
   stale, so the request is scaled by how far the core has moved since. With the

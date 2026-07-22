@@ -70,7 +70,7 @@ CKernel::CKernel (void)
 :	m_Timer (&m_Interrupt),
 	m_Display (&m_Interrupt, ST7789_DC_PIN, ST7789_RESET_PIN, ST7789_BACKLIGHT_PIN,
 		   ST7789_CS_PIN, ST7789_WIDTH, ST7789_HEIGHT,
-		   ST7789_TARGET_CLOCK, ST7789_CPOL, ST7789_CPHA,
+		   CST7789DMADisplay::TargetClock (), ST7789_CPOL, ST7789_CPHA,
 		   ST7789_MADCTL, ST7789_SWAP_COLOR_BYTES),
 	m_EMMC (&m_Interrupt, &m_Timer, &m_ActLED)
 {
@@ -240,7 +240,7 @@ void CKernel::WaitForNextFrame (void)
 	// keeps the mailbox call out of the frame budget.
 	if (m_nFramesThisSecond == 0)
 	{
-		m_Display.SetTargetClock (ST7789_TARGET_CLOCK);
+		m_Display.SetTargetClock (CST7789DMADisplay::TargetClock ());
 	}
 
 	// Count what is actually achieved. The pacing above should give 60, and if

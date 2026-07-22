@@ -50,15 +50,19 @@
 //
 // What fits, against the 16.64 ms budget of one frame:
 //
-//   256 px @ 62.5 MHz   15.7 ms   every frame
-//   320 px @ 66.7 MHz   18.4 ms   every second frame
-//   320 px @ 100 MHz    12.3 ms   every frame
+//   320 px @ 62.5 MHz   19.7 ms   every second frame
+//   320 px @ 87.5 MHz   14.0 ms   every frame
+//   320 px @ 100 MHz    12.3 ms   every frame, but degrades the panel
 //
-// 100 MHz needs the core pinned at 400 (force_turbo=0 in config.txt; core_freq
-// is ignored on this board). An earlier round concluded 100 and 125 MHz were
-// both unstable, but that was a missing include leaving the scaling compiled
-// out while a 320 wide window was still being set - SetArea then read a 256
-// wide buffer past its end. The clocks were never fairly tested.
+// The bus rate follows core_freq - see ST7789_CLOCK_DIVISOR below - so this is
+// set from config.txt rather than here. core_freq is *not* ignored on this
+// board, whatever an earlier version of this comment claimed: it was being put
+// after the [pi4]/[cm4] markers, where it only applies to those models.
+//
+// An earlier round also concluded 100 and 125 MHz were both unstable, but that
+// was a missing include leaving the scaling compiled out while a 320 wide
+// window was still being set - SetArea then read a 256 wide buffer past its
+// end. The clocks were never fairly tested; 100 MHz ran fine afterwards.
 #define DISPLAY_FRAME_SKIP	1
 
 #define NES_WIDTH		256		// what the core renders
@@ -89,18 +93,35 @@
 #define ST7789_CPOL		0
 #define ST7789_CPHA		0
 
-// The rate the panel is driven at, held constant.
+// The rate the panel is driven at: a fixed divisor of the core clock as
+// measured once at boot, held there afterwards.
 //
-// This has to be actively held, not just requested once. Circle fixes the SPI
-// divisor at init and never revisits it, so the rate that comes out is the
-// *current* core clock over that old divisor - and the core moves on its own,
-// roughly 250 MHz idle and 400 under load. A divisor of 4 is 62.5 MHz at core
-// 250 and 100 MHz at core 400, which is more than this panel will take: the
-// picture degrades until the core drops back.
+// Deriving it rather than naming a frequency is what makes the picture rate
+// adjustable from the SD card. core_freq in config.txt sets the core, this
+// divides it, and the two cannot disagree:
 //
-// CKernel::WaitForNextFrame() re-aims the bus once a second, so the rate stays
-// here whatever the core is doing. 62.5 MHz has been reliable throughout.
-#define ST7789_TARGET_CLOCK	62500000
+//   core_freq=250  ->  62.5 MHz  ->  19.7 ms/frame  ->  30 Hz picture
+//   core_freq=350  ->  87.5 MHz  ->  14.0 ms/frame  ->  60 Hz picture
+//
+// So the picture rate is changed by editing config.txt - reachable over USB
+// transfer mode, no rebuild and no reflash. See boot/config.txt, and mind that
+// core_freq must sit above the [pi4]/[cm4] markers or the firmware ignores it.
+//
+// The rate still has to be actively *held*. Circle fixes the SPI divisor at
+// init and never revisits it, so what comes out is the current core clock over
+// that stale divisor - and an unpinned core moves on its own, roughly 250 MHz
+// idle and 400 under load. CKernel::WaitForNextFrame() re-aims the bus once a
+// second against the target worked out at boot, so it stays put regardless.
+#define ST7789_CLOCK_DIVISOR	4
+
+// Never ask for more than this, whatever the core turns out to be doing. 100
+// MHz visibly degrades this panel, and an unpinned core caught boosting at
+// boot would divide to exactly that. 87.5 MHz passes, 100 does not.
+#define ST7789_CLOCK_CEILING	90000000
+
+// Used only if the core clock cannot be read at all, which would otherwise
+// leave the bus at nothing. The Zero's default.
+#define ST7789_CLOCK_CORE_ASSUMED	250000000
 
 // The GamePi20 has the panel mounted upside down. MY | MV | ML turns the
 // picture around at no cost; 0x70 is the same layout the right way up.
