@@ -14,6 +14,7 @@
 #include <circle/types.h>
 
 #include "ST7789DMADisplay.h"
+#include "NesRegion.h"
 
 class CRomMenu
 {
@@ -42,6 +43,10 @@ private:
 	C2DGraphics m_Graphics;
 
 	char m_Names[MaxRoms][MaxNameLength];
+
+	// One per entry, read from each file's header during Scan(). Shown as a
+	// letter in the list so a PAL game is recognisable before launching it.
+	enum TNesRegion m_Regions[MaxRoms];
 	char m_Path[MaxNameLength * 2];
 	const char *m_pDirectory;
 

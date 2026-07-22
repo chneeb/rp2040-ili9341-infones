@@ -67,6 +67,29 @@ static boolean IsNesFile (const char *pName)
 	       && (pExt[3] == 's' || pExt[3] == 'S');
 }
 
+// Read the region out of a ROM's header. Sixteen bytes per file, once, while
+// the list is being built - not while drawing it.
+static enum TNesRegion ReadRegion (const char *pDirectory, const char *pName)
+{
+	CString Path;
+	Path.Format ("%s/%s", pDirectory, pName);
+
+	FIL File;
+	if (f_open (&File, Path, FA_READ) != FR_OK)
+	{
+		return NesRegionUnknown;
+	}
+
+	unsigned char Header[16];
+	UINT nRead;
+	boolean bOK =    f_read (&File, Header, sizeof Header, &nRead) == FR_OK
+		      && nRead == sizeof Header;
+
+	f_close (&File);
+
+	return bOK ? NesRegionFromHeader (Header) : NesRegionUnknown;
+}
+
 unsigned CRomMenu::Scan (const char *pDirectory)
 {
 	m_pDirectory = pDirectory;
@@ -98,6 +121,7 @@ unsigned CRomMenu::Scan (const char *pDirectory)
 
 		strncpy (m_Names[m_nCount], Info.fname, MaxNameLength - 1);
 		m_Names[m_nCount][MaxNameLength - 1] = '\0';
+		m_Regions[m_nCount] = ReadRegion (pDirectory, Info.fname);
 		m_nCount++;
 	}
 
@@ -139,9 +163,15 @@ void CRomMenu::Draw (void)
 			m_Graphics.DrawRect (0, nY - 2, nWidth, ROW_HEIGHT, COLOUR_BAR);
 		}
 
+		// Region first, in a fixed width column, so the names still line
+		// up and the eye can run down the letters on their own.
+		CString Row;
+		Row.Format ("%c  %s", NesRegionChar (m_Regions[nIndex]),
+			    (const char *) m_Names[nIndex]);
+
 		m_Graphics.DrawText (LEFT_MARGIN, nY,
 				     nIndex == m_nSelected ? COLOUR_CHOSEN : COLOUR_TEXT,
-				     m_Names[nIndex]);
+				     Row);
 	}
 
 	// What the panel is actually being clocked at. Circle divides the measured

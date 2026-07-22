@@ -34,6 +34,9 @@
 // wide window, so SetArea read a 256 wide buffer past its end.
 #include "DisplayConfig.h"
 
+// The shared region reader, also used by the ROM menu.
+#include "NesRegion.h"
+
 //
 // The NES palette, in the panel's pixel format.
 //
@@ -216,25 +219,15 @@ void InfoNES_PadState (DWORD *pdwPad1, DWORD *pdwPad2, DWORD *pdwSystem)
 
 static boolean s_bPAL = FALSE;
 
-// The region as the header declares it, which is only worth believing when the
-// header is NES 2.0.
-//
-// iNES 1.0 has a PAL bit at byte 9 bit 0, and practically every dump in
-// existence leaves it clear whatever the game is, so reading it would mostly
-// mislabel PAL ROMs as NTSC. It is ignored here: an undetected PAL ROM behaves
-// exactly as it did before, which is the safe way to be wrong.
-//
-// NES 2.0 - byte 7 bits 2-3 == 2 - puts the region in byte 12 bits 0-1:
-// 0 NTSC, 1 PAL, 2 either, 3 Dendy. That one is trustworthy.
+// NesHeader is the 16 byte header as read, so it can go straight to the shared
+// reader in NesRegion.h - the same one the ROM menu labels the list with, so
+// the letter shown and the timing used can never disagree.
 static boolean HeaderSaysPAL (void)
 {
-	if (((NesHeader.byInfo2 >> 2) & 3) != 2)
-	{
-		return FALSE;
-	}
+	static_assert (sizeof NesHeader == 16, "iNES header must be 16 bytes");
 
-	// byReserve[] starts at byte 8, so byte 12 is index 4.
-	return (NesHeader.byReserve[4] & 3) == 1;
+	return NesRegionFromHeader ((const unsigned char *) &NesHeader)
+	       == NesRegionPAL;
 }
 
 //

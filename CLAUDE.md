@@ -711,16 +711,54 @@ more vblank; this still has 262. Games that do heavy work in vblank, or time
 raster effects to the longer frame, can still misbehave. Fixing that means real
 PAL support in the core, which would cost the untouched-upstream property.
 
-**Detection is deliberately half-blind.** `HeaderSaysPAL()` believes only a
-NES 2.0 header — byte 7 bits 2–3 == 2, then byte 12 bits 0–1, where 1 is PAL.
-iNES 1.0's PAL bit at byte 9 bit 0 is ignored, because practically every dump
-leaves it clear whatever the game is, so reading it would mislabel PAL ROMs as
-NTSC far more often than it helped. An undetected PAL ROM behaves exactly as it
-did before, which is the safe way to be wrong — but it does mean one game can
-be corrected and another not, for reasons invisible from the menu. A region
-column in the ROM list would earn its keep.
+**Detection is deliberately half-blind.** `NesRegion.h` believes only a NES 2.0
+header — byte 7 bits 2–3 == 2, then byte 12 bits 0–1, where 1 is PAL. iNES
+1.0's PAL bit at byte 9 bit 0 is ignored, because practically every dump leaves
+it clear whatever the game is, so reading it would mislabel PAL ROMs as NTSC
+far more often than it helped. An undetected PAL ROM behaves exactly as it did
+before, which is the safe way to be wrong.
+
+`NesRegion.h` is the single copy of that bit twiddling, used by both the
+emulator side and the ROM menu, so the letter shown in the list and the timing
+actually used can never disagree about a file.
 
 To check a ROM by hand: `xxd -l 16 game.nes`, then read bytes 7 and 12.
+
+### The region column in the ROM menu
+
+Each row is prefixed with one letter, read from the file's header once during
+`Scan()` — sixteen bytes per file, never while drawing:
+
+| | |
+|---|---|
+| `N` | NTSC |
+| `P` | PAL — paced at 50 Hz, see above |
+| `M` | multi-region |
+| `D` | Dendy |
+| `?` | iNES 1.0 header: **not known** |
+
+**`?` rather than `N` for an unknown region, and that distinction is the whole
+point of the column.** Most dumps in the wild are iNES 1.0, so calling them
+NTSC would put a confident letter on exactly the case worth seeing — a PAL game
+whose header never admitted to it, which will run 20% fast with nothing on
+screen to explain why. `?` says "this one is on its own".
+
+### Tearing the sound device down
+
+`CPWMSoundBaseDevice::Cancel()` only *requests* the stop — the header says it
+"takes effect after a short delay" — and the destructor does not wait. Deleting
+straight after the Cancel tears the DMA buffers down underneath a transfer that
+is still running, and the machine hangs.
+
+`CKernel::SoundClose()` now spins on `IsActive()` first, bounded at 100 ms so a
+device that never goes idle costs a moment's silence rather than the whole
+machine.
+
+This was latent for a long time because nothing called `SoundClose()` during
+play. It only became reachable when PAL pacing arrived, since switching between
+an NTSC and a PAL ROM is the one path that has to reopen the device at a
+different rate — so the symptom was "loading a ROM fails, but only if the
+previous game was from the other region".
 
 ### ROM menu
 

@@ -309,8 +309,6 @@ int CKernel::SoundOpen (int nSampleRate)
 		SoundClose ();
 	}
 
-	m_nSoundRate = nSampleRate;
-
 	m_pSound = new CPWMSoundBaseDevice (&m_Interrupt, nSampleRate);
 	if (m_pSound == 0)
 	{
@@ -335,18 +333,43 @@ int CKernel::SoundOpen (int nSampleRate)
 		return -1;
 	}
 
+	// Only once it is actually running, so a failed open cannot leave a rate
+	// recorded that no device is using.
+	m_nSoundRate = nSampleRate;
+
 	return 0;
 }
 
+// Cancel() only *requests* the stop - the header says it "takes effect after a
+// short delay" - and ~CPWMSoundBaseDevice does not wait for it. Deleting
+// straight after the Cancel tears the DMA buffers down underneath a transfer
+// that is still running, which hangs the machine.
+//
+// This went unnoticed for a long time because nothing called SoundClose()
+// during play; it was only reached when switching between an NTSC and a PAL
+// ROM, which is the one path that has to reopen the device.
 void CKernel::SoundClose (void)
 {
-	if (m_pSound != 0)
+	if (m_pSound == 0)
 	{
-		m_pSound->Cancel ();
-
-		delete m_pSound;
-		m_pSound = 0;
+		return;
 	}
+
+	m_pSound->Cancel ();
+
+	// A frame's worth is ample - the DMA gives up at the end of the block it
+	// is in. Bounded so that a device which never goes idle costs a moment's
+	// silence rather than the whole machine.
+	unsigned nWaited = 0;
+	while (m_pSound->IsActive () && nWaited < 100000)
+	{
+		CTimer::SimpleusDelay (100);
+		nWaited += 100;
+	}
+
+	delete m_pSound;
+	m_pSound = 0;
+	m_nSoundRate = 0;
 }
 
 // Whatever does not fit is dropped. Waiting for room would stall the frame the
