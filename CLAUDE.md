@@ -625,11 +625,15 @@ APU produces 8 bit unsigned, which Circle takes directly as
 triangle, noise, DPCM - are averaged, as the reference ports do.
 
 Volume is a percentage applied while mixing: the channels are summed and
-scaled by `volume / 250`, so **50 is unity** — the plain average the reference
-ports use — and is the default. 100 is twice that and clips the loudest
-passages. A single NES channel only reaches a fifth of full scale, which is why
-unity is quiet to begin with. Muting is separate state, so the level survives
-it; `GetVolume()` returns 0 while muted and nothing downstream knows.
+scaled by `volume / 500`, so **50 is unity** — the plain average the reference
+ports use. 100 is twice that and clips the loudest passages. A single NES
+channel only reaches a fifth of full scale, which is why unity is quiet to
+begin with. Muting is separate state, so the level survives it; `GetVolume()`
+returns 0 while muted and nothing downstream knows.
+
+`VOLUME_DEFAULT` is **15**, well below unity: the board drives a small speaker
+straight off the PWM pin, and TL/TR step up from there. Starting low costs a
+couple of presses; starting too loud cannot be taken back.
 
 `CPWMSoundBaseDevice` with the queue API: `AllocateQueue`, `SetWriteFormat`,
 `Start`, then `Write` per frame. 100 ms of queue. Anything that does not fit is

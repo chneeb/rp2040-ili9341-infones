@@ -43,10 +43,15 @@
 #define USB_GADGET_PID		0x0001
 
 // Volume as a percentage. 50 is unity - the plain average of the five APU
-// channels that the reference ports use - and is the default. 100 is twice
-// that and will clip the loudest passages. A single NES channel only ever
-// reaches a fifth of full scale, which is why unity is quiet to begin with.
-#define VOLUME_DEFAULT		50
+// channels that the reference ports use. 100 is twice that and will clip the
+// loudest passages. A single NES channel only ever reaches a fifth of full
+// scale, which is why unity is quiet to begin with.
+//
+// The default is well below unity because this board drives a small speaker
+// straight off the PWM pin, where unity is louder than it needs to be. TL and
+// TR step from here, so starting low costs a couple of presses at most - and
+// starting too loud is the mistake that cannot be taken back.
+#define VOLUME_DEFAULT		15
 #define VOLUME_STEP		5
 #define VOLUME_MAX		100
 
