@@ -665,8 +665,9 @@ snapshotted when the menu opens - the menu is paced by the same code, so a live
 reading would just measure the menu. Expect 60 or 61: the target is 60.0988 Hz
 and counting whole frames in a one second window lands either side of it.
 
-InfoNES has no PAL support at all, so the target is always NTSC. A PAL ROM will
-genuinely run about 20% fast, and that is the emulator, not the pacing.
+InfoNES has no PAL support at all, so the core always runs 262 scanlines at the
+NTSC rate. The platform layer corrects most of what that costs a PAL ROM — see
+[Region](#region-ntsc-and-pal) below.
 
 `InfoNES_LoadFrame()` presents and then waits, in that order - the frame is
 going out over DMA during the wait, so the transfer costs nothing extra while
@@ -677,6 +678,49 @@ uses. The deadline is carried forward rather than set from whenever the wait
 ended, which is what that build does and what makes it drift. A frame that
 overruns writes the lost time off instead of making it up: catching up means
 sprinting through the frames after it, which looks worse than one late frame.
+
+### Region (NTSC and PAL)
+
+A PAL game on NTSC timing expects 50 frames a second and gets 60.1, so it plays
+about 20% fast with the music pitched up to match. Two constants in the
+platform layer fix that, and the shared core is not touched:
+
+- **Frame period 19997 µs** instead of 16639 (50.007 Hz against 60.0988).
+  `GamePi20_SetFramePeriod()`, set from `InfoNES_ReadRom()`.
+- **Sound device opened at 18347 Hz** instead of 22050.
+
+The second one is not optional and is not obvious. The APU's output per second
+is tied to the frame rate — it generates a fixed number of samples per scanline
+(`ApuQual[]` in `InfoNES_pAPU.cpp`, 22050/60/262 of them) — so pacing at 50 Hz
+produces five sixths as many samples a second. Left at 22050 that is a
+permanent underrun, breaking up fifty times a second. Opening at five sixths of
+the rate balances it *and* fixes the pitch in the same stroke: samples computed
+for 22050 Hz played at 18347 come out a factor 0.83207 lower, against the
+0.83208 a PAL game wants. One change, both problems.
+
+`CKernel::SoundOpen()` rebuilds the device when the rate changes, since
+`CPWMSoundBaseDevice` takes its rate at construction and going from an NTSC
+game to a PAL one changes it.
+
+**A happy accident:** the APU frame counter ticks per scanline, so slowing to
+50 Hz puts it at 240 × 50/60 = 200 Hz, which is the real PAL rate. Envelopes
+and sweeps come right for free.
+
+**What is still wrong.** A PAL machine has 312 scanlines and correspondingly
+more vblank; this still has 262. Games that do heavy work in vblank, or time
+raster effects to the longer frame, can still misbehave. Fixing that means real
+PAL support in the core, which would cost the untouched-upstream property.
+
+**Detection is deliberately half-blind.** `HeaderSaysPAL()` believes only a
+NES 2.0 header — byte 7 bits 2–3 == 2, then byte 12 bits 0–1, where 1 is PAL.
+iNES 1.0's PAL bit at byte 9 bit 0 is ignored, because practically every dump
+leaves it clear whatever the game is, so reading it would mislabel PAL ROMs as
+NTSC far more often than it helped. An undetected PAL ROM behaves exactly as it
+did before, which is the safe way to be wrong — but it does mean one game can
+be corrected and another not, for reasons invisible from the menu. A region
+column in the ROM list would earn its keep.
+
+To check a ROM by hand: `xxd -l 16 game.nes`, then read bytes 7 and 12.
 
 ### ROM menu
 

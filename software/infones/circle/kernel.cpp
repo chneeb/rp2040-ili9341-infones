@@ -201,7 +201,18 @@ void CKernel::PresentFrame (const u16 *pFrame)
 // NTSC NES runs at 60.0988 Hz, which is 16639 us a frame. The pico build uses
 // 16666 (a flat 60 Hz); the difference is small but it is free to get right,
 // and it is what decides whether music plays at the pitch it should.
+//
+// Only the starting value: the platform layer replaces it per ROM, since a PAL
+// game wants 19997. See the region notes in InfoNES_System_Circle.cpp.
 #define FRAME_PERIOD_US		16639
+
+void CKernel::SetFramePeriod (unsigned nMicros)
+{
+	if (nMicros != 0)
+	{
+		m_nFramePeriodUs = nMicros;
+	}
+}
 
 // Wait until the next frame is due.
 //
@@ -220,7 +231,7 @@ void CKernel::WaitForNextFrame (void)
 		m_nNextFrameTime = nNow;
 	}
 
-	m_nNextFrameTime += FRAME_PERIOD_US;
+	m_nNextFrameTime += m_nFramePeriodUs;
 
 	if (nNow < m_nNextFrameTime)
 	{
@@ -285,10 +296,20 @@ int CKernel::SoundOpen (int nSampleRate)
 	return -1;
 #endif
 
+	// Already open at this rate - nothing to do. At a different rate it has to
+	// be rebuilt: CPWMSoundBaseDevice takes its rate at construction, and going
+	// from an NTSC game to a PAL one changes it.
 	if (m_pSound != 0)
 	{
-		return 0;
+		if ((int) m_nSoundRate == nSampleRate)
+		{
+			return 0;
+		}
+
+		SoundClose ();
 	}
+
+	m_nSoundRate = nSampleRate;
 
 	m_pSound = new CPWMSoundBaseDevice (&m_Interrupt, nSampleRate);
 	if (m_pSound == 0)
@@ -579,6 +600,14 @@ int GamePi20_DisplayBusy (void)
 	assert (pKernel != 0);
 
 	return pKernel->DisplayBusy () ? 1 : 0;
+}
+
+void GamePi20_SetFramePeriod (unsigned nMicros)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	pKernel->SetFramePeriod (nMicros);
 }
 
 void GamePi20_WaitForNextFrame (void)

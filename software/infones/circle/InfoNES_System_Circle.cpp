@@ -191,6 +191,53 @@ void InfoNES_PadState (DWORD *pdwPad1, DWORD *pdwPad2, DWORD *pdwSystem)
 }
 
 //
+// Region
+//
+// InfoNES has no PAL support: it always runs 262 scanlines at the NTSC rate.
+// A PAL game on that timing plays about 20% fast, with the music pitched up to
+// match, because it expects 50 frames a second and gets 60.1.
+//
+// That much can be corrected from out here, without touching the shared core.
+// Pace the frames at 50.007 Hz and open the sound device at the same fraction
+// of its nominal rate, and speed and pitch both come right - see
+// InfoNES_SoundOpen() for why the second one is needed.
+//
+// What is NOT corrected is the scanline count. A real PAL machine has 312
+// lines and correspondingly more vblank; this still has 262. Games that do
+// heavy work in vblank, or that time raster effects to the longer frame, can
+// still misbehave. Proper PAL support means changing the core, which would
+// cost the untouched-upstream property this port is built around.
+//
+// A happy accident: the APU frame counter ticks per scanline, so slowing the
+// frames to 50 Hz puts it at 240 * 50/60 = 200 Hz, which is the real PAL rate.
+//
+#define FRAME_PERIOD_NTSC_US	16639		// 60.0988 Hz
+#define FRAME_PERIOD_PAL_US	19997		// 50.0070 Hz
+
+static boolean s_bPAL = FALSE;
+
+// The region as the header declares it, which is only worth believing when the
+// header is NES 2.0.
+//
+// iNES 1.0 has a PAL bit at byte 9 bit 0, and practically every dump in
+// existence leaves it clear whatever the game is, so reading it would mostly
+// mislabel PAL ROMs as NTSC. It is ignored here: an undetected PAL ROM behaves
+// exactly as it did before, which is the safe way to be wrong.
+//
+// NES 2.0 - byte 7 bits 2-3 == 2 - puts the region in byte 12 bits 0-1:
+// 0 NTSC, 1 PAL, 2 either, 3 Dendy. That one is trustworthy.
+static boolean HeaderSaysPAL (void)
+{
+	if (((NesHeader.byInfo2 >> 2) & 3) != 2)
+	{
+		return FALSE;
+	}
+
+	// byReserve[] starts at byte 8, so byte 12 is index 4.
+	return (NesHeader.byReserve[4] & 3) == 1;
+}
+
+//
 // ROM loading
 //
 
@@ -212,6 +259,12 @@ int InfoNES_ReadRom (const char *pszFileName)
 
 		return -1;
 	}
+
+	// Before InfoNES_Reset(), which is what opens the sound device, so the
+	// rate it is opened at can follow the region.
+	s_bPAL = HeaderSaysPAL ();
+	GamePi20_SetFramePeriod (s_bPAL ? FRAME_PERIOD_PAL_US
+					: FRAME_PERIOD_NTSC_US);
 
 	memset (SRAM, 0, SRAM_SIZE);
 
@@ -502,6 +555,24 @@ void InfoNES_SoundInit (void)
 
 int InfoNES_SoundOpen (int samples_per_sync, int sample_rate)
 {
+	// On a PAL ROM the device is opened *slower* than the APU thinks it is.
+	//
+	// The APU's output per second is tied to the frame rate: it generates a
+	// fixed number of samples per scanline (ApuQual[] in InfoNES_pAPU.cpp,
+	// 22050/60/262 of them), so pacing at 50 Hz produces five sixths as many
+	// samples a second. Left at 22050 that is a permanent underrun, breaking
+	// up fifty times a second.
+	//
+	// Opening at five sixths of the rate makes the arithmetic balance again,
+	// and fixes the pitch in the same stroke: samples the APU computed for
+	// 22050 Hz, played at 18347, come out a factor 0.8321 lower, which is
+	// exactly the 50.007/60.0988 a PAL game wants. One change, both problems.
+	if (s_bPAL)
+	{
+		sample_rate = (int) ((u64) sample_rate * FRAME_PERIOD_NTSC_US
+				     / FRAME_PERIOD_PAL_US);
+	}
+
 	int nResult = GamePi20_SoundOpen (sample_rate);
 
 	// The core starts muted (APU_Mute is 1 in InfoNES.cpp) and leaves it to the

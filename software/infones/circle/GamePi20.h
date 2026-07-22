@@ -34,6 +34,10 @@ int GamePi20_DisplayBusy (void);
 // has been handed over, so the transfer runs during the wait.
 void GamePi20_WaitForNextFrame (void);
 
+// How long a frame should last, in microseconds. Set when a ROM is loaded,
+// from its region: 16639 for NTSC, 19997 for PAL.
+void GamePi20_SetFramePeriod (unsigned nMicros);
+
 // Start PWM audio at the rate the emulator asks for. Mono, 8 bit unsigned,
 // which is what the APU produces. Returns 0 on success.
 int GamePi20_SoundOpen (int nSampleRate);

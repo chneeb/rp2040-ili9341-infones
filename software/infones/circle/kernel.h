@@ -45,6 +45,10 @@ public:
 	boolean DisplayBusy (void) const	{ return m_Display.IsBusy (); }
 	unsigned ReadPad (void);
 	void WaitForNextFrame (void);
+
+	/// \brief How long one frame should last, in microseconds. Set per ROM from
+	///        its region - 16639 NTSC, 19997 PAL. Zero is ignored.
+	void SetFramePeriod (unsigned nMicros);
 	const char *ChooseRom (void);
 	// The core clock as it was when the SPI divisor was fixed. Circle sets
 	// that divisor once and never revisits it, so this is what the current
@@ -100,6 +104,13 @@ private:
 	boolean			m_bVolumeChord = FALSE;
 	boolean			m_bMuted = FALSE;
 	unsigned		m_nVolume = VOLUME_DEFAULT;
+
+	// NTSC until a ROM says otherwise. FRAME_PERIOD_US in kernel.cpp.
+	unsigned		m_nFramePeriodUs = 16639;
+
+	// What the sound device was opened at, so a game with a different region
+	// can be spotted and the device rebuilt.
+	unsigned		m_nSoundRate = 0;
 
 	// Frame pacing. The deadline is carried forward rather than taken from the
 	// time the last wait ended, so a frame that runs long does not push every
