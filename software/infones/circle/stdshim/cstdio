@@ -1,0 +1,5 @@
+// Minimal stand-in: the InfoNES core only calls printf(), for progress
+// messages. InfoNES_System_Circle.cpp provides it.
+#pragma once
+#include <stddef.h>
+extern "C" int printf (const char *pFormat, ...);

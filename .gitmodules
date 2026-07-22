@@ -1,3 +1,6 @@
 [submodule "hardware/makecode_arcade_console"]
 	path = hardware/makecode_arcade_console
 	url = https://github.com/pondahai/makecode_arcade_console
+[submodule "circle"]
+	path = circle
+	url = https://github.com/rsta2/circle.git

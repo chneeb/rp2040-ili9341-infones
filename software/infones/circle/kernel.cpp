@@ -1,0 +1,685 @@
+//
+//  kernel.cpp
+//
+#include "kernel.h"
+#include "GamePi20.h"
+#include "RomMenu.h"
+#include <circle/2dgraphics.h>
+#include <circle/util.h>
+#include <circle/machineinfo.h>
+#include <assert.h>
+
+// The emulator's own header. Kept to this one place, and to
+// InfoNES_System_Circle.cpp, so Circle and InfoNES never meet in a header.
+// Not extern "C": the core is C++, and its symbols are mangled accordingly.
+#include "InfoNES.h"
+
+#define DRIVE		"SD:"
+
+// Where the menu looks for .nes files.
+#define ROM_DIRECTORY	"SD:/nes"
+
+// The panel's colour model is big endian RGB565 (ST7789_SWAP_COLOR_BYTES is
+// TRUE, because the NES palette is stored that way), so colours written by
+// hand have to be swapped to match.
+#define RGB565(r, g, b)	((u16) __builtin_bswap16 ((u16) ((((r) & 0x1F) << 11) | (((g) & 0x3F) << 5) | ((b) & 0x1F))))
+
+// InfoNES pad bits.
+#define NES_PAD_A	0x01
+#define NES_PAD_B	0x02
+#define NES_PAD_SELECT	0x04
+#define NES_PAD_START	0x08
+#define NES_PAD_UP	0x10
+#define NES_PAD_DOWN	0x20
+#define NES_PAD_LEFT	0x40
+#define NES_PAD_RIGHT	0x80
+
+CKernel *CKernel::s_pThis = 0;
+
+// Ask for core/DIVISOR rather than a fixed rate, so Circle's truncating divide
+// lands on the divisor we actually want whatever the core clock reads at boot.
+
+
+// The board's buttons, and what the NES sees them as.
+static const struct
+{
+	unsigned nPin;
+	unsigned nPadBit;
+}
+s_ButtonMap[] =
+{
+	{ GPIO_BUTTON_UP,	NES_PAD_UP	},
+	{ GPIO_BUTTON_DOWN,	NES_PAD_DOWN	},
+	{ GPIO_BUTTON_LEFT,	NES_PAD_LEFT	},
+	{ GPIO_BUTTON_RIGHT,	NES_PAD_RIGHT	},
+	// Crossed over on purpose: the board's silkscreen does not follow the
+	// convention NES games expect, where A is the primary action and sits
+	// under the thumb on the right. Swap these two lines back for a literal
+	// A-to-A mapping.
+	{ GPIO_BUTTON_A,	NES_PAD_B	},
+	{ GPIO_BUTTON_B,	NES_PAD_A	},
+	{ GPIO_BUTTON_SELECT,	NES_PAD_SELECT	},
+	{ GPIO_BUTTON_START,	NES_PAD_START	},
+	// Spare buttons, doubling for the two above so either pair can be used.
+	// TL and TR are not here: they work the volume instead.
+	{ GPIO_BUTTON_X,	NES_PAD_B	},
+	{ GPIO_BUTTON_Y,	NES_PAD_A	}
+};
+
+CKernel::CKernel (void)
+:	m_Timer (&m_Interrupt),
+	m_Display (&m_Interrupt, ST7789_DC_PIN, ST7789_RESET_PIN, ST7789_BACKLIGHT_PIN,
+		   ST7789_CS_PIN, ST7789_WIDTH, ST7789_HEIGHT,
+		   CST7789DMADisplay::TargetClock (), ST7789_CPOL, ST7789_CPHA,
+		   ST7789_MADCTL, ST7789_SWAP_COLOR_BYTES),
+	m_EMMC (&m_Interrupt, &m_Timer, &m_ActLED)
+{
+	s_pThis = this;
+	m_ActLED.Blink (5);
+}
+
+CKernel::~CKernel (void)
+{
+	s_pThis = 0;
+}
+
+boolean CKernel::Initialize (void)
+{
+	// Interrupts first: the display signals the end of a transfer from an
+	// interrupt, and its own init already uses DMA.
+	m_nCoreClockAtInit = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
+
+	if (!m_Interrupt.Initialize ())	return FALSE;
+	if (!m_Timer.Initialize ())	return FALSE;
+	if (!m_Display.Initialize ())	return FALSE;
+	if (!m_EMMC.Initialize ())	return FALSE;
+
+	InitializeButtons ();
+
+	return TRUE;
+}
+
+void CKernel::InitializeButtons (void)
+{
+	static_assert (sizeof s_ButtonMap / sizeof s_ButtonMap[0] == GPIOButtonCount,
+		       "s_ButtonMap and GPIOButtonCount disagree");
+
+	for (unsigned i = 0; i < GPIOButtonCount; i++)
+	{
+		m_ButtonPins[i].AssignPin (s_ButtonMap[i].nPin);
+		m_ButtonPins[i].SetMode (GPIOModeInputPullUp);
+	}
+
+	m_VolumeDownPin.AssignPin (GPIO_BUTTON_TL);
+	m_VolumeDownPin.SetMode (GPIOModeInputPullUp);
+	m_VolumeUpPin.AssignPin (GPIO_BUTTON_TR);
+	m_VolumeUpPin.SetMode (GPIOModeInputPullUp);
+}
+
+// The buttons pull their pin to ground, so LOW means pressed.
+//
+// The shoulder buttons are handled here too, on the press rather than while
+// held: this runs once a frame, so a held button would otherwise run the
+// volume from one end to the other in well under a second.
+unsigned CKernel::ReadPad (void)
+{
+	unsigned nPad = 0;
+
+	for (unsigned i = 0; i < GPIOButtonCount; i++)
+	{
+		if (m_ButtonPins[i].Read () == LOW)
+		{
+			nPad |= s_ButtonMap[i].nPadBit;
+		}
+	}
+
+	UpdateVolume ();
+
+	return nPad;
+}
+
+// TL turns the volume down, TR up, both together mute and unmute.
+//
+// A step is taken when a button is *released*, not when it is pressed. Pressing
+// two buttons together never quite happens at the same moment, so acting on the
+// press would step the volume for whichever one arrived first, every time the
+// mute chord was used. Waiting for the release means the chord can be spotted
+// first and the step suppressed.
+void CKernel::UpdateVolume (void)
+{
+	boolean bDown = m_VolumeDownPin.Read () == LOW;
+	boolean bUp = m_VolumeUpPin.Read () == LOW;
+
+	if (bDown && bUp)
+	{
+		if (!m_bVolumeChord)
+		{
+			m_bVolumeChord = TRUE;
+			m_bMuted = !m_bMuted;
+		}
+	}
+	else if (!bDown && !bUp)
+	{
+		if (m_bVolumeChord)
+		{
+			// Both let go after a mute: the presses have been used up.
+			m_bVolumeChord = FALSE;
+		}
+		else if (m_bVolumeDownWasDown)
+		{
+			m_nVolume = m_nVolume > VOLUME_STEP ? m_nVolume - VOLUME_STEP : 0;
+		}
+		else if (m_bVolumeUpWasDown)
+		{
+			m_nVolume += VOLUME_STEP;
+			if (m_nVolume > VOLUME_MAX)
+			{
+				m_nVolume = VOLUME_MAX;
+			}
+		}
+	}
+
+	m_bVolumeDownWasDown = bDown;
+	m_bVolumeUpWasDown = bUp;
+}
+
+// Hand the picture to the panel. NES_OUT_WIDTH is 320 when the width is being
+// filled and 256 when it is pillarboxed; either way it is centred. SetArea
+// starts the transfer and returns, so the next frame is emulated while this one
+// is still going out.
+void CKernel::PresentFrame (const u16 *pFrame)
+{
+	CDisplay::TArea Area;
+	Area.x1 = NES_OFFSET_X;
+	Area.x2 = NES_OFFSET_X + NES_OUT_WIDTH - 1;
+	Area.y1 = NES_OFFSET_Y;
+	Area.y2 = NES_OFFSET_Y + NES_HEIGHT - 1;
+
+	m_Display.SetArea (Area, pFrame);
+}
+
+// NTSC NES runs at 60.0988 Hz, which is 16639 us a frame. The pico build uses
+// 16666 (a flat 60 Hz); the difference is small but it is free to get right,
+// and it is what decides whether music plays at the pitch it should.
+#define FRAME_PERIOD_US		16639
+
+// Wait until the next frame is due.
+//
+// The deadline is carried forward, rather than set from the time this wait
+// happened to end, so that the odd long frame does not push every later frame
+// back with it. If a frame runs so long that the deadline has already gone by,
+// the lost time is written off instead of being made up - catching up would
+// mean sprinting through the following frames, which looks far worse than a
+// single late one.
+void CKernel::WaitForNextFrame (void)
+{
+	u64 nNow = CTimer::GetClockTicks64 ();
+
+	if (m_nNextFrameTime == 0)
+	{
+		m_nNextFrameTime = nNow;
+	}
+
+	m_nNextFrameTime += FRAME_PERIOD_US;
+
+	if (nNow < m_nNextFrameTime)
+	{
+		while (CTimer::GetClockTicks64 () < m_nNextFrameTime)
+		{
+			// The frame is already on its way out over DMA while this spins.
+		}
+	}
+	else
+	{
+		m_nNextFrameTime = nNow;
+	}
+
+	// Hold the bus at its target rate. The core clock moves on its own and
+	// Circle's divisor does not follow it, so without this the panel ends up
+	// overdriven whenever the core boosts. Once a second is often enough and
+	// keeps the mailbox call out of the frame budget.
+	if (m_nFramesThisSecond == 0)
+	{
+		m_Display.SetTargetClock (CST7789DMADisplay::TargetClock ());
+	}
+
+	// Count what is actually achieved. The pacing above should give 60, and if
+	// it does not this is the number that says so.
+	m_nFramesThisSecond++;
+
+	nNow = CTimer::GetClockTicks64 ();
+	if (m_nSecondStarted == 0)
+	{
+		m_nSecondStarted = nNow;
+	}
+	else if (nNow - m_nSecondStarted >= 1000000)
+	{
+		// Rate over the window that actually elapsed, not a count of frames in
+		// it. The window ends on the first frame past a second, so it runs a
+		// frame long - counting would read one high and make a correct 60.1 Hz
+		// look like 61.
+		u64 nElapsed = nNow - m_nSecondStarted;
+
+		m_nMeasuredFPS = (unsigned) ((u64) m_nFramesThisSecond * 1000000 / nElapsed);
+		m_nFramesThisSecond = 0;
+		m_nSecondStarted = nNow;
+	}
+}
+
+//
+// Sound. PWM on GPIO 18, which on this board feeds both the speaker and the
+// earphone jack - see configure-gamepi20.sh for the three options that put it
+// there rather than on GPIO 12 and 13, which are the Up and Right buttons.
+//
+// The APU produces 8 bit unsigned mono, which Circle takes directly as
+// SoundFormatUnsigned8, so nothing has to be converted.
+//
+
+// Enough queued audio to ride out a frame that runs long, without adding so
+// much delay that the sound drifts noticeably behind the picture.
+#define SOUND_QUEUE_MSECS	100
+
+int CKernel::SoundOpen (int nSampleRate)
+{
+#if !SOUND_ENABLED
+	return -1;
+#endif
+
+	if (m_pSound != 0)
+	{
+		return 0;
+	}
+
+	m_pSound = new CPWMSoundBaseDevice (&m_Interrupt, nSampleRate);
+	if (m_pSound == 0)
+	{
+		return -1;
+	}
+
+	if (!m_pSound->AllocateQueue (SOUND_QUEUE_MSECS))
+	{
+		delete m_pSound;
+		m_pSound = 0;
+
+		return -1;
+	}
+
+	m_pSound->SetWriteFormat (SoundFormatUnsigned8, 1);
+
+	if (!m_pSound->Start ())
+	{
+		delete m_pSound;
+		m_pSound = 0;
+
+		return -1;
+	}
+
+	return 0;
+}
+
+void CKernel::SoundClose (void)
+{
+	if (m_pSound != 0)
+	{
+		m_pSound->Cancel ();
+
+		delete m_pSound;
+		m_pSound = 0;
+	}
+}
+
+// Whatever does not fit is dropped. Waiting for room would stall the frame the
+// emulator is in the middle of, and a dropped sample is far less noticeable
+// than a late frame.
+int CKernel::SoundWrite (const unsigned char *pSamples, int nCount)
+{
+	if (m_pSound == 0)
+	{
+		return nCount;
+	}
+
+	return m_pSound->Write (pSamples, nCount);
+}
+
+// Room left to write into, which is what the APU means by "buffer size": it
+// clamps the number of samples it generates to this
+// (InfoNES_pAPUHsync -> std::min(bufferLeft, n)).
+//
+// Not GetQueueFramesAvail(): despite the name that is the number of frames
+// already queued and waiting to be sent. Returning it deadlocks the emulator
+// into silence - an empty queue reads as no room, so the APU generates
+// nothing, so the queue stays empty.
+int CKernel::SoundBufferAvail (void)
+{
+	if (m_pSound == 0)
+	{
+		return 0;
+	}
+
+	return m_pSound->GetQueueSizeFrames () - m_pSound->GetQueueFramesAvail ();
+}
+
+// Up is read once, straight after the pull-ups are enabled. Nothing is written
+// anywhere and no flag survives a boot, so this cannot leave the device stuck
+// in a mode it will not come out of: power cycle without holding Up and it is
+// an emulator again.
+boolean CKernel::UpHeldAtBoot (void)
+{
+	// Let the pull-up settle before believing the pin.
+	m_Timer.MsDelay (10);
+
+	for (unsigned i = 0; i < GPIOButtonCount; i++)
+	{
+		if (   s_ButtonMap[i].nPin == GPIO_BUTTON_UP
+		    && m_ButtonPins[i].Read () == LOW)
+		{
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+// Present the SD card to a PC as a mass storage device.
+//
+// The file system is never mounted in this mode, so there is no question of
+// both sides holding the same FAT. There is no frame deadline either, which
+// matters because CUSBMSDGadget::Update() does the actual block I/O rather
+// than just pumping state - it cannot be called from a 16 ms game loop.
+TShutdownMode CKernel::RunUSBGadget (void)
+{
+	C2DGraphics Graphics (&m_Display);
+	if (Graphics.Initialize ())
+	{
+		Graphics.ClearScreen (COLOR2D (0, 0, 40));
+		Graphics.DrawText (m_Display.GetWidth () / 2, 90, COLOR2D (140, 190, 255),
+				   "USB transfer mode", C2DGraphics::AlignCenter);
+		Graphics.DrawText (m_Display.GetWidth () / 2, 120, COLOR2D (200, 200, 200),
+				   "SD card is available to the PC", C2DGraphics::AlignCenter);
+		Graphics.DrawText (m_Display.GetWidth () / 2, 150, COLOR2D (200, 200, 200),
+				   "Eject there, then press START", C2DGraphics::AlignCenter);
+		Graphics.UpdateDisplay ();
+
+		// The frame goes out over DMA asynchronously. Let it finish before
+		// touching USB: halting or reconfiguring mid-transfer leaves half a
+		// screen, which is what a failed gadget start looked like.
+		m_Display.WaitForTransfer ();
+	}
+
+	// Heap allocated and never freed on purpose: ~CUSBMSDGadget() is an
+	// assert(0), so the gadget must outlive every path out of here. Leaking it
+	// costs nothing, as the only way out is a reboot.
+	CUSBMSDGadget *pGadget = new CUSBMSDGadget (&m_Interrupt, &m_EMMC,
+						    USB_GADGET_VID, USB_GADGET_PID);
+	if (pGadget == 0 || !pGadget->Initialize ())
+	{
+		if (Graphics.Initialize ())
+		{
+			Graphics.DrawText (m_Display.GetWidth () / 2, 190, COLOR2D (255, 120, 120),
+					   "USB gadget failed to start",
+					   C2DGraphics::AlignCenter);
+			Graphics.UpdateDisplay ();
+			m_Display.WaitForTransfer ();
+		}
+
+		for (;;)
+		{
+			m_ActLED.Blink (1);
+			m_Timer.MsDelay (1000);
+		}
+	}
+
+	for (;;)
+	{
+		pGadget->UpdatePlugAndPlay ();
+		pGadget->Update ();
+
+		if (ReadPad () & NES_PAD_START)
+		{
+			// Reboot rather than carry on: the emulator would have to mount
+			// a card the PC may have just rewritten underneath it.
+			return ShutdownReboot;
+		}
+	}
+
+	return ShutdownHalt;
+}
+
+TShutdownMode CKernel::Run (void)
+{
+	if (UpHeldAtBoot ())
+	{
+		return RunUSBGadget ();
+	}
+
+#if ST7789_TEST_PATTERN
+	DrawTestPattern ();
+
+	for (;;)
+	{
+		m_ActLED.Blink (1);
+		m_Timer.MsDelay (1000);
+	}
+#else
+	if (f_mount (&m_FileSystem, DRIVE, 1) != FR_OK)
+	{
+		return ShutdownHalt;
+	}
+
+	m_pMenu = new CRomMenu (&m_Display);
+	if (m_pMenu == 0 || !m_pMenu->Initialize ())
+	{
+		return ShutdownHalt;
+	}
+
+	m_pMenu->Scan (ROM_DIRECTORY);
+
+	// InfoNES_Main() owns the loop from here: it calls InfoNES_Menu(), which
+	// comes back through ChooseRom() below, then runs the game until the quit
+	// chord is pressed, then asks for a ROM again.
+	InfoNES_Main ();
+
+	f_mount (0, DRIVE, 0);
+#endif
+
+	return ShutdownHalt;
+}
+
+#if ST7789_TEST_PATTERN
+
+// A static pattern, drawn into the 256x240 area the emulator will use. What it
+// tells you:
+//
+//   nothing at all       -> wiring, chip select or the backlight pin
+//   wrong bar colours    -> ST7789_SWAP_COLOR_BYTES
+//   markers wrong corner -> orientation, adjust ST7789_MADCTL
+//   bars not centred     -> the pillarbox offsets
+//
+void CKernel::DrawTestPattern (void)
+{
+	static u16 Frame[NES_OUT_WIDTH * NES_HEIGHT];
+
+	static const u16 Bars[4] =
+	{
+		RGB565 (31,  0,  0),		// red
+		RGB565 ( 0, 63,  0),		// green
+		RGB565 ( 0,  0, 31),		// blue
+		RGB565 (31, 63, 31)		// white
+	};
+
+	for (unsigned y = 0; y < NES_HEIGHT; y++)
+	{
+		for (unsigned x = 0; x < NES_OUT_WIDTH; x++)
+		{
+			Frame[y * NES_OUT_WIDTH + x] = Bars[x / (NES_OUT_WIDTH / 4)];
+		}
+	}
+
+	// A three pixel border, to check that the whole 256x240 area lands inside
+	// the panel and that the pillarbox offsets are right: 32 px of black should
+	// remain either side.
+	const u16 Yellow = RGB565 (31, 63, 0);
+	for (unsigned i = 0; i < 3; i++)
+	{
+		for (unsigned x = 0; x < NES_OUT_WIDTH; x++)
+		{
+			Frame[i * NES_OUT_WIDTH + x] = Yellow;
+			Frame[(NES_HEIGHT - 1 - i) * NES_OUT_WIDTH + x] = Yellow;
+		}
+		for (unsigned y = 0; y < NES_HEIGHT; y++)
+		{
+			Frame[y * NES_OUT_WIDTH + i] = Yellow;
+			Frame[y * NES_OUT_WIDTH + (NES_OUT_WIDTH - 1 - i)] = Yellow;
+		}
+	}
+
+	// Corner markers: yellow top left, magenta top right.
+	const u16 Magenta = RGB565 (31, 0, 31);
+	for (unsigned y = 0; y < 20; y++)
+	{
+		for (unsigned x = 0; x < 20; x++)
+		{
+			Frame[y * NES_OUT_WIDTH + x] = Yellow;
+		}
+		for (unsigned x = NES_OUT_WIDTH - 10; x < NES_OUT_WIDTH; x++)
+		{
+			Frame[y * NES_OUT_WIDTH + x] = Magenta;
+		}
+	}
+
+	PresentFrame (Frame);
+	m_Display.WaitForTransfer ();
+}
+
+#endif
+
+//
+// The bridge declared in GamePi20.h.
+//
+
+void GamePi20_PresentFrame (const unsigned short *pFrame)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	pKernel->PresentFrame ((const u16 *) pFrame);
+}
+
+unsigned GamePi20_ReadPad (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->ReadPad ();
+}
+
+int GamePi20_DisplayBusy (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->DisplayBusy () ? 1 : 0;
+}
+
+void GamePi20_WaitForNextFrame (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	pKernel->WaitForNextFrame ();
+}
+
+int GamePi20_SoundOpen (int nSampleRate)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->SoundOpen (nSampleRate);
+}
+
+void GamePi20_SoundClose (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	pKernel->SoundClose ();
+}
+
+int GamePi20_SoundWrite (const unsigned char *pSamples, int nCount)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->SoundWrite (pSamples, nCount);
+}
+
+const char *CKernel::ChooseRom (void)
+{
+	if (m_pMenu == 0)
+	{
+		return nullptr;
+	}
+
+	// Freeze what the game managed, before the menu's own paced loop overwrites
+	// the running measurement.
+	m_nLastGameFPS = m_nMeasuredFPS;
+
+	return m_pMenu->Run (GamePi20_ReadPad, GamePi20_WaitForNextFrame);
+}
+
+const char *GamePi20_ChooseRom (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->ChooseRom ();
+}
+
+unsigned GamePi20_GetVolume (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->GetVolume ();
+}
+
+unsigned GamePi20_GetMeasuredFPS (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->GetMeasuredFPS ();
+}
+
+unsigned GamePi20_GetCoreClockAtInit (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->GetCoreClockAtInit ();
+}
+
+unsigned GamePi20_GetVolumeLevel (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->GetVolumeLevel ();
+}
+
+int GamePi20_IsMuted (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->IsMuted () ? 1 : 0;
+}
+
+int GamePi20_SoundBufferAvail (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->SoundBufferAvail ();
+}
+
