@@ -677,3 +677,30 @@ transfer in flight.
   library. `ChrBuf` need not be saved — set `ChrBufUpdate = 0xFF` and let it
   regenerate.
 - An on-screen volume indicator (X and Y are the only spare buttons).
+- **Persisting the volume**, which currently resets to `VOLUME_DEFAULT` every
+  boot. Designed but not written; the shape it should take:
+
+  Kernel side, not the InfoNES platform layer — `CKernel` already owns both
+  `m_nVolume` and the FATFS mount, so routing it through `GamePi20.h` would
+  drag it across the bridge for nothing.
+
+  Text `key=value` at `SD:/settings.txt`. `FF_USE_STRFUNC` is 1, so `f_printf`
+  and `f_gets` are there and no parser is needed; the root of the card puts it
+  beside `config.txt` for editing over USB transfer mode; and it extends to a
+  last-played ROM or a brightness without a format change.
+
+  **Flush lazily, not on change.** Holding TR from 0 to 100 is twenty steps in
+  a few seconds. Mark dirty and write from the once-a-second branch already in
+  `WaitForNextFrame()` (`m_nFramesThisSecond == 0`, where the clock is
+  re-aimed), so it is at most one write a second and only after a real change.
+
+  **No `.tmp` and rename, unlike the SRAM path** - deliberately. That protects
+  8 KB of irreplaceable progress; this is twenty bytes recreated with two
+  button presses, in a single sector, behind a one second window. Writing in
+  place is right, and duplicating the crash-safe dance would be cargo cult.
+
+  Load after the mount and before `SoundOpen()`, clamped to `VOLUME_MAX` so a
+  hand-edited file cannot hand the mixer a silly number.
+
+  Persist the volume but **not** the mute: booting silent with no on-screen
+  indicator reads as broken hardware, and mute is one chord to restore.
