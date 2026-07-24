@@ -160,6 +160,8 @@ unsigned CKernel::ReadPad (void)
 	// GamePadButtonUp/Down/Left/Right.
 	#define SIMPLE_PAD_A		0x0002
 	#define SIMPLE_PAD_B		0x0004
+	#define SIMPLE_PAD_L		0x0010
+	#define SIMPLE_PAD_R		0x0020
 	#define SIMPLE_PAD_SELECT	0x0100
 	#define SIMPLE_PAD_START	0x0200
 
@@ -171,6 +173,10 @@ unsigned CKernel::ReadPad (void)
 	if (b & GamePadButtonDown)  nPad |= NES_PAD_DOWN;
 	if (b & GamePadButtonLeft)  nPad |= NES_PAD_LEFT;
 	if (b & GamePadButtonRight) nPad |= NES_PAD_RIGHT;
+
+	// L/R shoulders work the volume, like the GamePi20's TL/TR: L down, R up,
+	// both together mute/unmute. Not part of the NES pad.
+	UpdateVolume ((b & SIMPLE_PAD_L) != 0, (b & SIMPLE_PAD_R) != 0);
 
 	return nPad;
 }
@@ -313,7 +319,7 @@ unsigned CKernel::ReadPad (void)
 		}
 	}
 
-	UpdateVolume ();
+	UpdateVolume (m_VolumeDownPin.Read () == LOW, m_VolumeUpPin.Read () == LOW);
 
 	return nPad;
 }
@@ -327,11 +333,13 @@ unsigned CKernel::ReadPad (void)
 // press would step the volume for whichever one arrived first, every time the
 // mute chord was used. Waiting for the release means the chord can be spotted
 // first and the step suppressed.
-void CKernel::UpdateVolume (void)
+// The volume state machine, shared by both input sources: the GamePi20 passes
+// its TL/TR GPIO pins, the MHS35 passes its gamepad L/R buttons. Down lowers,
+// up raises, both together toggle mute. Every action is taken on release, not
+// press, so the two never-quite-simultaneous presses of the mute chord are
+// recognised as a chord before either is mistaken for a step.
+void CKernel::UpdateVolume (boolean bDown, boolean bUp)
 {
-	boolean bDown = m_VolumeDownPin.Read () == LOW;
-	boolean bUp = m_VolumeUpPin.Read () == LOW;
-
 	if (bDown && bUp)
 	{
 		if (!m_bVolumeChord)

@@ -84,7 +84,7 @@ private:
 	// of running the emulator, so the card can be read from a PC.
 	boolean UpHeldAtBoot (void);
 	TShutdownMode RunUSBGadget (void);
-	void UpdateVolume (void);
+	void UpdateVolume (boolean bDown, boolean bUp);
 
 #ifdef PANEL_MHS35
 	// USB gamepad input, used instead of GPIO buttons on the MHS35/Pi 3B. The

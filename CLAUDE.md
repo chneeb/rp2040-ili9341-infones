@@ -963,7 +963,8 @@ whose bits do NOT follow Circle's semantic button names — read off the hardwar
 
 Circle's `GamePadButtonA` is `0x200`, which is actually this pad's **Start** —
 mapping by name sent Start to NES A. NES A←A, B←B, Select←Select, Start←Start;
-d-pad via the normalised `GamePadButtonUp/Down/Left/Right`; X/Y/L/R free.
+d-pad via the normalised `GamePadButtonUp/Down/Left/Right`. L/R work the volume
+(see Sound); X/Y are free.
 
 **USB transfer mode is compiled out** (`#ifndef PANEL_MHS35`): the Pi 2B/3B USB
 is host-only behind the LAN9514 hub and cannot be a gadget at all.
@@ -975,8 +976,11 @@ with no pin config, just `SOUND_ENABLED 1`. The whole InfoNES→queue→PWM path
 the same code the GamePi20 uses. The one board difference: the jack is
 **stereo**, so `SoundOpen` sets 2 channels and `SoundWrite` duplicates each mono
 NES sample to L+R (`#ifdef PANEL_MHS35`); writing 1 channel left the right side
-undriven, heard as noise. No volume control is mapped yet (L/R are free), so the
-level is `VOLUME_DEFAULT`.
+undriven, heard as noise. The **L/R shoulders work the volume** (L down, R up,
+both together mute/unmute) — the same `UpdateVolume` state machine the GamePi20
+uses on its TL/TR, now taking the two button states as parameters so the GPIO
+and gamepad paths share it. Starts at `VOLUME_DEFAULT` (15, low) and is not
+persisted across reboots.
 
 **Speed.** The SPI bus runs at 100 MHz requested — `CILI9486DMADisplay`'s
 `SPI_CLOCK_HZ`, held there by `SetTargetClock` (re-aimed once a second against
@@ -997,9 +1001,6 @@ emulator.
 
 ### Not done yet
 
-- **MHS35 volume control** — the level is fixed at `VOLUME_DEFAULT`; the free
-  L/R shoulder buttons could drive it up/down (there is no volume UI/state to
-  persist on this board yet).
 - **MHS35 aspect ratio** — currently fills 480x320 (slightly wide). A
   pillar-boxed 4:3 option would be `NES_FILL_WIDTH 0` plus centring.
 - Save states (a full machine snapshot, as opposed to the cart battery above).
