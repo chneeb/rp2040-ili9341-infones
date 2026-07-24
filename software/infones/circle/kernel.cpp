@@ -181,22 +181,33 @@ unsigned CKernel::ReadPad (void)
 	return nPad;
 }
 
-// Find and attach the pad. Once attached, the status handler keeps its state
-// current, so the poll returns immediately - no UpdatePlugAndPlay per scanline.
+// Find and attach the pad, and keep it hot-pluggable. Called once a frame
+// (InfoNES_PadState runs in vblank), so UpdatePlugAndPlay is cheap here.
+//
+// It must run every frame, connected or not: USB removal is only processed
+// during UpdatePlugAndPlay, and that is what fires GamePadRemovedHandler (which
+// clears m_pGamePad) on an unplug. While disconnected the poll scans for a pad
+// each frame; on re-plug it re-registers the handlers.
 void CKernel::PollGamePad (void)
 {
+	m_USBHCI.UpdatePlugAndPlay ();
+
 	if (m_pGamePad != 0)
 	{
+		// Still attached; the status handler keeps m_GamePadState current, and
+		// a removal above will have cleared m_pGamePad before we get here.
 		return;
 	}
 
-	if (!m_USBHCI.UpdatePlugAndPlay ())
+	// Look for a pad. Scan a few slots rather than assume index 1: a pad
+	// re-plugged during play can come back as upad2, upad3, ... if the old
+	// name has not been freed yet.
+	for (unsigned nIndex = 1; nIndex <= 4 && m_pGamePad == 0; nIndex++)
 	{
-		return;
+		m_pGamePad = (CUSBGamePadDevice *)
+			m_DeviceNameService.GetDevice ("upad", nIndex, FALSE);
 	}
 
-	m_pGamePad = (CUSBGamePadDevice *)
-		m_DeviceNameService.GetDevice ("upad", 1, FALSE);
 	if (m_pGamePad == 0)
 	{
 		return;

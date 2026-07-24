@@ -966,6 +966,12 @@ mapping by name sent Start to NES A. NES A←A, B←B, Select←Select, Start←
 d-pad via the normalised `GamePadButtonUp/Down/Left/Right`. L/R work the volume
 (see Sound); X/Y are free.
 
+The pad is **hot-pluggable**: `PollGamePad` runs `UpdatePlugAndPlay` every frame
+(cheap - `InfoNES_PadState` is once a frame, in vblank), so an unplug fires
+`GamePadRemovedHandler` (clears `m_pGamePad`; `ReadPad` then returns 0, no stuck
+buttons) and a re-plug is re-detected. Discovery scans `upad1..upad4` rather
+than assuming index 1, since a re-plugged pad can come back on a higher slot.
+
 **USB transfer mode is compiled out** (`#ifndef PANEL_MHS35`): the Pi 2B/3B USB
 is host-only behind the LAN9514 hub and cannot be a gadget at all.
 
