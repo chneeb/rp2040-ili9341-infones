@@ -16,6 +16,10 @@
 #include <circle/types.h>
 #include <circle/sound/pwmsoundbasedevice.h>
 #include <circle/usb/gadget/usbmsdgadget.h>
+#ifdef PANEL_MHS35
+#include <circle/usb/usbhcidevice.h>
+#include <circle/usb/usbgamepad.h>
+#endif
 #include <SDCard/emmc.h>
 #include <fatfs/ff.h>
 
@@ -82,6 +86,18 @@ private:
 	TShutdownMode RunUSBGadget (void);
 	void UpdateVolume (void);
 
+#ifdef PANEL_MHS35
+	// USB gamepad input, used instead of GPIO buttons on the MHS35/Pi 3B. The
+	// discovery and normalisation are lifted from the circle-arcade project,
+	// which uses the same pad.
+	void PollGamePad (void);
+	static void GamePadStatusHandler (unsigned nDeviceIndex, const TGamePadState *pState);
+	static void GamePadRemovedHandler (CDevice *pDevice, void *pContext);
+	static void NormalizeGamePadState (TGamePadState *pState);
+	static unsigned AxisToButtons (const TGamePadState *pState, unsigned nAxis,
+				       unsigned nLowButton, unsigned nHighButton);
+#endif
+
 	// do not change this order
 	CActLED			m_ActLED;
 	CKernelOptions		m_Options;
@@ -89,9 +105,15 @@ private:
 	CExceptionHandler	m_ExceptionHandler;
 	CInterruptSystem	m_Interrupt;
 	CTimer			m_Timer;
-	CST7789DMADisplay	m_Display;
+	CPanelDisplay		m_Display;
 	CEMMCDevice		m_EMMC;
 	FATFS			m_FileSystem;
+
+#ifdef PANEL_MHS35
+	CUSBHCIDevice		m_USBHCI;
+	CUSBGamePadDevice * volatile m_pGamePad = 0;
+	TGamePadState		m_GamePadState;
+#endif
 
 	static const unsigned GPIOButtonCount = 10;
 	CGPIOPin		m_ButtonPins[GPIOButtonCount];

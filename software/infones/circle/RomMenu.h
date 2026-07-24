@@ -13,7 +13,7 @@
 #include <circle/2dgraphics.h>
 #include <circle/types.h>
 
-#include "ST7789DMADisplay.h"
+#include "DisplayConfig.h"
 #include "NesRegion.h"
 
 class CRomMenu
@@ -22,7 +22,7 @@ public:
 	static const unsigned MaxRoms = 128;
 	static const unsigned MaxNameLength = 64;
 
-	CRomMenu (CST7789DMADisplay *pDisplay);
+	CRomMenu (CPanelDisplay *pDisplay);
 	~CRomMenu (void);
 
 	boolean Initialize (void);
@@ -39,7 +39,7 @@ public:
 private:
 	void Draw (void);
 
-	CST7789DMADisplay *m_pDisplay;
+	CPanelDisplay *m_pDisplay;
 	C2DGraphics m_Graphics;
 
 	char m_Names[MaxRoms][MaxNameLength];

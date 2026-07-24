@@ -32,7 +32,7 @@
 #define COLOUR_BAR	COLOR2D (0, 60, 160)
 #define COLOUR_TITLE	COLOR2D (140, 190, 255)
 
-CRomMenu::CRomMenu (CST7789DMADisplay *pDisplay)
+CRomMenu::CRomMenu (CPanelDisplay *pDisplay)
 :	m_pDisplay (pDisplay),
 	m_Graphics (pDisplay),
 	m_pDirectory (""),
@@ -140,6 +140,7 @@ void CRomMenu::Draw (void)
 	m_Graphics.DrawText (nWidth / 2, 8, COLOUR_TITLE, "Select a game",
 			     C2DGraphics::AlignCenter);
 
+
 	// How many rows fit below the title.
 	unsigned nRows = (nHeight - TOP_MARGIN - FOOTER_HEIGHT) / ROW_HEIGHT;
 
@@ -182,7 +183,7 @@ void CRomMenu::Draw (void)
 	// target, because CKernel::WaitForNextFrame() re-aims the divisor once a
 	// second to hold it there whatever the core is doing.
 	unsigned nCore = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
-	unsigned nSPI = CST7789DMADisplay::TargetClock ();
+	unsigned nSPI = CPanelDisplay::TargetClock ();
 
 	CString Info;
 #if !SOUND_ENABLED

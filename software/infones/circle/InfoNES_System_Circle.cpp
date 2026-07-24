@@ -93,11 +93,14 @@ void InfoNES_PostDrawLine (int line)
 
 #if NES_FILL_WIDTH
 
-// 256 to 320 is exactly 4:5, so this is a clean nearest neighbour: four source
-// pixels become five, with one of them doubled, and nothing else moves. The
-// source column for each output column never changes, so it is worked out once.
-static WORD s_Scaled[NES_OUT_WIDTH * NES_HEIGHT];
+// Nearest-neighbour scale of the 256x240 frame up to NES_OUT_WIDTH x
+// NES_OUT_HEIGHT. Both source tables are worked out once. For the GamePi20
+// (320x240) the row table is the identity - 240 maps straight to 240, which is
+// the old width-only behaviour, and 256->320 is a clean 4:5. For the MHS35
+// (480x320) both axes stretch to fill.
+static WORD s_Scaled[NES_OUT_WIDTH * NES_OUT_HEIGHT];
 static unsigned s_SourceColumn[NES_OUT_WIDTH];
+static unsigned s_SourceRow[NES_OUT_HEIGHT];
 static boolean s_bScaleReady = FALSE;
 
 static void ScaleFrame (void)
@@ -108,22 +111,23 @@ static void ScaleFrame (void)
 		{
 			s_SourceColumn[x] = x * NES_WIDTH / NES_OUT_WIDTH;
 		}
+		for (unsigned y = 0; y < NES_OUT_HEIGHT; y++)
+		{
+			s_SourceRow[y] = y * NES_HEIGHT / NES_OUT_HEIGHT;
+		}
 
 		s_bScaleReady = TRUE;
 	}
 
-	const WORD *pIn = s_Frame;
-	WORD *pOut = s_Scaled;
-
-	for (unsigned y = 0; y < NES_HEIGHT; y++)
+	for (unsigned y = 0; y < NES_OUT_HEIGHT; y++)
 	{
+		const WORD *pIn = &s_Frame[s_SourceRow[y] * NES_WIDTH];
+		WORD *pOut = &s_Scaled[y * NES_OUT_WIDTH];
+
 		for (unsigned x = 0; x < NES_OUT_WIDTH; x++)
 		{
 			pOut[x] = pIn[s_SourceColumn[x]];
 		}
-
-		pIn += NES_WIDTH;
-		pOut += NES_OUT_WIDTH;
 	}
 }
 

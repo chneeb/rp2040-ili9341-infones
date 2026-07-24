@@ -28,7 +28,14 @@
 // Set to 0 to leave the sound device unopened altogether. InfoNES_SoundOpen()
 // then fails, APU_Mute stays set, and the APU does no work at all - so this
 // also frees the CPU time the mixing took, and leaves GPIO 18 undriven.
+//
+// Off for the MHS35/Pi 3B bring-up: that board's PWM audio routing differs from
+// the Zero's (and this rig has no speaker), so sound is a later step.
+#ifdef PANEL_MHS35
+#define SOUND_ENABLED		0
+#else
 #define SOUND_ENABLED		1
+#endif
 
 // USB vendor and product ID for the mass storage gadget.
 //

@@ -17,7 +17,18 @@
 CIRCLEHOME = ../../../circle
 INFONES    = ..
 
-OBJS	= main.o kernel.o ST7789DMADisplay.o RomMenu.o InfoNES_System_Circle.o
+# Panel: `make MHS35=1` builds for the goodtft MHS35 (ILI9486, 480x320) on a
+# Pi 2/3; the default is the GamePi20 (ST7789, 320x240) on a Pi Zero. Only the
+# selected driver is compiled, so each panel's DisplayConfig branch is the only
+# one that has to resolve.
+ifdef MHS35
+DEFINE	+= -DPANEL_MHS35
+PANEL_OBJ = ILI9486DMADisplay.o
+else
+PANEL_OBJ = ST7789DMADisplay.o
+endif
+
+OBJS	= main.o kernel.o $(PANEL_OBJ) RomMenu.o InfoNES_System_Circle.o
 
 # Emulator core, shared with the pico build, untouched. The 137 mappers are
 # not listed: InfoNES_Mapper.cpp #includes them all, so they are not separate
@@ -37,6 +48,7 @@ DEFINE	+= -DNES_FIRST_SCANLINE=0 -DNES_LAST_SCANLINE=239
 LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
 	  $(CIRCLEHOME)/lib/usb/gadget/libusbgadget.a \
 	  $(CIRCLEHOME)/lib/usb/libusb.a \
+	  $(CIRCLEHOME)/lib/input/libinput.a \
 	  $(CIRCLEHOME)/addon/SDCard/libsdcard.a \
 	  $(CIRCLEHOME)/lib/fs/libfs.a \
 	  $(CIRCLEHOME)/lib/sound/libsound.a \

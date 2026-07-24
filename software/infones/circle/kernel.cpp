@@ -70,12 +70,19 @@ CKernel::CKernel (void)
 :	m_Timer (&m_Interrupt),
 	m_Display (&m_Interrupt, ST7789_DC_PIN, ST7789_RESET_PIN, ST7789_BACKLIGHT_PIN,
 		   ST7789_CS_PIN, ST7789_WIDTH, ST7789_HEIGHT,
-		   CST7789DMADisplay::TargetClock (), ST7789_CPOL, ST7789_CPHA,
+		   CPanelDisplay::TargetClock (), ST7789_CPOL, ST7789_CPHA,
 		   ST7789_MADCTL, ST7789_SWAP_COLOR_BYTES),
 	m_EMMC (&m_Interrupt, &m_Timer, &m_ActLED)
+#ifdef PANEL_MHS35
+	, m_USBHCI (&m_Interrupt, &m_Timer, TRUE)	// TRUE: plug-and-play
+#endif
 {
 	s_pThis = this;
 	m_ActLED.Blink (5);
+
+#ifdef PANEL_MHS35
+	memset (&m_GamePadState, 0, sizeof m_GamePadState);
+#endif
 }
 
 CKernel::~CKernel (void)
@@ -94,7 +101,11 @@ boolean CKernel::Initialize (void)
 	if (!m_Display.Initialize ())	return FALSE;
 	if (!m_EMMC.Initialize ())	return FALSE;
 
+#ifdef PANEL_MHS35
+	if (!m_USBHCI.Initialize ())	return FALSE;
+#else
 	InitializeButtons ();
+#endif
 
 	return TRUE;
 }
@@ -115,6 +126,175 @@ void CKernel::InitializeButtons (void)
 	m_VolumeUpPin.AssignPin (GPIO_BUTTON_TR);
 	m_VolumeUpPin.SetMode (GPIOModeInputPullUp);
 }
+
+#ifdef PANEL_MHS35
+
+// USB gamepad -> NES pad bits. The face buttons map straight across; X and Y
+// double for B and A as they do on the GamePi20. The d-pad comes through
+// whichever way the pad reports it (buttons, hat or axes), because
+// NormalizeGamePadState has already folded hat and axes into the button bits.
+unsigned CKernel::ReadPad (void)
+{
+	PollGamePad ();
+
+	if (m_pGamePad == 0)
+	{
+		return 0;
+	}
+
+	u32 b = m_GamePadState.buttons;
+	unsigned nPad = 0;
+
+	// This pad is a "SimpleGamePad" (confirmed against circle-arcade, same
+	// pad). Its buttons do NOT land on Circle's semantic GamePadButtonA/B/
+	// Start/Select bits - Circle's GamePadButtonA is 0x200, which is actually
+	// this pad's Start. The bit layout below was read straight off the
+	// hardware with a menu readout:
+	//
+	//   X 0x01   A 0x02   B 0x04   Y 0x08   L 0x10   R 0x20
+	//   Select 0x100   Start 0x200
+	//
+	// A -> jump, B -> run, as NES games expect. X/Y/L/R are left free for a
+	// later use (turbo, save states). The d-pad is read by name because
+	// NormalizeGamePadState folds the hat and analog axes into
+	// GamePadButtonUp/Down/Left/Right.
+	#define SIMPLE_PAD_A		0x0002
+	#define SIMPLE_PAD_B		0x0004
+	#define SIMPLE_PAD_SELECT	0x0100
+	#define SIMPLE_PAD_START	0x0200
+
+	if (b & SIMPLE_PAD_A)      nPad |= NES_PAD_A;
+	if (b & SIMPLE_PAD_B)      nPad |= NES_PAD_B;
+	if (b & SIMPLE_PAD_SELECT) nPad |= NES_PAD_SELECT;
+	if (b & SIMPLE_PAD_START)  nPad |= NES_PAD_START;
+	if (b & GamePadButtonUp)    nPad |= NES_PAD_UP;
+	if (b & GamePadButtonDown)  nPad |= NES_PAD_DOWN;
+	if (b & GamePadButtonLeft)  nPad |= NES_PAD_LEFT;
+	if (b & GamePadButtonRight) nPad |= NES_PAD_RIGHT;
+
+	return nPad;
+}
+
+// Find and attach the pad. Once attached, the status handler keeps its state
+// current, so the poll returns immediately - no UpdatePlugAndPlay per scanline.
+void CKernel::PollGamePad (void)
+{
+	if (m_pGamePad != 0)
+	{
+		return;
+	}
+
+	if (!m_USBHCI.UpdatePlugAndPlay ())
+	{
+		return;
+	}
+
+	m_pGamePad = (CUSBGamePadDevice *)
+		m_DeviceNameService.GetDevice ("upad", 1, FALSE);
+	if (m_pGamePad == 0)
+	{
+		return;
+	}
+
+	m_pGamePad->RegisterRemovedHandler (GamePadRemovedHandler);
+
+	const TGamePadState *pState = m_pGamePad->GetInitialState ();
+	if (pState != 0)
+	{
+		memcpy (&m_GamePadState, pState, sizeof m_GamePadState);
+		NormalizeGamePadState (&m_GamePadState);
+	}
+
+	m_pGamePad->RegisterStatusHandler (GamePadStatusHandler);
+}
+
+void CKernel::GamePadStatusHandler (unsigned nDeviceIndex, const TGamePadState *pState)
+{
+	if (nDeviceIndex != 0 || s_pThis == 0 || pState == 0)
+	{
+		return;
+	}
+
+	memcpy (&s_pThis->m_GamePadState, pState, sizeof s_pThis->m_GamePadState);
+	NormalizeGamePadState (&s_pThis->m_GamePadState);
+}
+
+void CKernel::GamePadRemovedHandler (CDevice *pDevice, void *pContext)
+{
+	(void) pDevice;
+	(void) pContext;
+
+	if (s_pThis != 0)
+	{
+		s_pThis->m_pGamePad = 0;
+	}
+}
+
+// Cheap pads report the d-pad as a hat switch or an analog axis pair rather
+// than digital buttons; fold either into the button bits so ReadPad can just
+// read buttons. Lifted from circle-arcade, same pad.
+void CKernel::NormalizeGamePadState (TGamePadState *pState)
+{
+	if (pState->nhats >= 1)
+	{
+		static const unsigned HatToButtons[8] =
+		{
+			GamePadButtonUp,
+			GamePadButtonUp   | GamePadButtonRight,
+			GamePadButtonRight,
+			GamePadButtonDown | GamePadButtonRight,
+			GamePadButtonDown,
+			GamePadButtonDown | GamePadButtonLeft,
+			GamePadButtonLeft,
+			GamePadButtonUp   | GamePadButtonLeft
+		};
+
+		int nHat = pState->hats[0];
+		if (0 <= nHat && nHat < 8)
+		{
+			pState->buttons |= HatToButtons[nHat];
+		}
+	}
+
+	// The pad's d-pad-as-axes sit on axes 3 and 4 (as on circle-arcade's pad).
+	if (pState->naxes > 3)
+	{
+		pState->buttons |= AxisToButtons (pState, 3,
+						  GamePadButtonLeft, GamePadButtonRight);
+	}
+	if (pState->naxes > 4)
+	{
+		pState->buttons |= AxisToButtons (pState, 4,
+						  GamePadButtonUp, GamePadButtonDown);
+	}
+}
+
+unsigned CKernel::AxisToButtons (const TGamePadState *pState, unsigned nAxis,
+				 unsigned nLowButton, unsigned nHighButton)
+{
+	int nMinimum = pState->axes[nAxis].minimum;
+	int nMaximum = pState->axes[nAxis].maximum;
+	int nValue   = pState->axes[nAxis].value;
+
+	int nRange = nMaximum - nMinimum;
+	if (nRange <= 0)
+	{
+		return 0;
+	}
+
+	if (nValue <= nMinimum + nRange / 4)
+	{
+		return nLowButton;
+	}
+	if (nValue >= nMaximum - nRange / 4)
+	{
+		return nHighButton;
+	}
+
+	return 0;
+}
+
+#else	// GamePi20 GPIO buttons
 
 // The buttons pull their pin to ground, so LOW means pressed.
 //
@@ -137,6 +317,8 @@ unsigned CKernel::ReadPad (void)
 
 	return nPad;
 }
+
+#endif	// PANEL_MHS35
 
 // TL turns the volume down, TR up, both together mute and unmute.
 //
@@ -193,7 +375,7 @@ void CKernel::PresentFrame (const u16 *pFrame)
 	Area.x1 = NES_OFFSET_X;
 	Area.x2 = NES_OFFSET_X + NES_OUT_WIDTH - 1;
 	Area.y1 = NES_OFFSET_Y;
-	Area.y2 = NES_OFFSET_Y + NES_HEIGHT - 1;
+	Area.y2 = NES_OFFSET_Y + NES_OUT_HEIGHT - 1;
 
 	m_Display.SetArea (Area, pFrame);
 }
@@ -251,7 +433,7 @@ void CKernel::WaitForNextFrame (void)
 	// keeps the mailbox call out of the frame budget.
 	if (m_nFramesThisSecond == 0)
 	{
-		m_Display.SetTargetClock (CST7789DMADisplay::TargetClock ());
+		m_Display.SetTargetClock (CPanelDisplay::TargetClock ());
 	}
 
 	// Count what is actually achieved. The pacing above should give 60, and if
@@ -491,10 +673,15 @@ TShutdownMode CKernel::RunUSBGadget (void)
 
 TShutdownMode CKernel::Run (void)
 {
+#ifndef PANEL_MHS35
+	// USB mass-storage transfer mode. Not on the MHS35/Pi 3B: its USB is
+	// host-only (behind the LAN9514 hub), so it cannot be a gadget at all, and
+	// the Up pin is not a button there - it is the gamepad's now.
 	if (UpHeldAtBoot ())
 	{
 		return RunUSBGadget ();
 	}
+#endif
 
 #if ST7789_TEST_PATTERN
 	DrawTestPattern ();

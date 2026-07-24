@@ -9,12 +9,71 @@
 //
 #pragma once
 
+// ---- Panel selection --------------------------------------------------------
+//
+// Define PANEL_MHS35 (-DPANEL_MHS35, e.g. `make MHS35=1`) to build for the
+// goodtft MHS35 (ILI9486, 480x320) on a Pi 2/3. The default is the Waveshare
+// GamePi20 (ST7789, 320x240) on a Pi Zero.
+//
+// CPanelDisplay is whichever driver is selected; both are CDisplay subclasses
+// with the same constructor signature, so the kernel treats them alike. The
+// ST7789_* names below are the panel config for whichever is selected - the
+// historical names are kept to limit churn across the rest of the port.
+//
+#ifdef PANEL_MHS35
+#include "ILI9486DMADisplay.h"
+typedef CILI9486DMADisplay CPanelDisplay;
+#else
 #include "ST7789DMADisplay.h"
+typedef CST7789DMADisplay CPanelDisplay;
+#endif
 
 // Set to 1 to draw a static test pattern and stop, instead of running the
 // emulator. Use it when bringing the panel up: it tells wiring, orientation
 // and colour order apart before any emulator code is involved.
 #define ST7789_TEST_PATTERN	0
+
+#define NES_WIDTH		256		// what the core renders
+#define NES_HEIGHT		240
+
+#ifdef PANEL_MHS35
+
+// ==== goodtft MHS35 / ILI9486, 480x320 landscape ============================
+//
+// Verified on hardware via the mhs35probe: 16-bit register interface
+// (regwidth=16), RGB565, MADCTL 0xE8, landscape. See ILI9486DMADisplay.
+
+#define SKIP_DISPLAY		0
+
+#define ST7789_WIDTH		480
+#define ST7789_HEIGHT		320
+
+// Fill the panel: scale the 256x240 NES frame up in both axes (nearest
+// neighbour, 256->480 and 240->320). The panel is 3:2 and the NES is 4:3, so
+// the picture is a little wide - the same fill-the-panel trade the GamePi20
+// makes. Set NES_FILL_WIDTH to 0 for a centred, unscaled 256x240 instead.
+#define NES_FILL_WIDTH		1
+#define NES_OUT_WIDTH		480
+#define NES_OUT_HEIGHT		320
+
+#define DISPLAY_FRAME_SKIP	1
+
+// Wiring (BCM). Backlight is hardwired on - no GPIO. MISO is touch-only.
+#define ST7789_DC_PIN		24
+#define ST7789_RESET_PIN	25
+#define ST7789_BACKLIGHT_PIN	CPanelDisplay::None
+#define ST7789_CS_PIN		8
+#define ST7789_CPOL		0
+#define ST7789_CPHA		0
+
+// 0xE8 = MY | MV | BGR: landscape, matching Linux rotate=270. Confirmed on the
+// hardware with the probe's labelled-quadrant test.
+#define ST7789_MADCTL		0xE8
+
+// The NES palette is big endian RGB565.
+#define ST7789_SWAP_COLOR_BYTES	TRUE
+
+#else	// ==== Waveshare GamePi20 / ST7789, 320x240 ===========================
 
 // Diagnostic: run the emulator and its sound, but never send a frame to the
 // panel. If a background noise in the audio disappears with this set, the
@@ -65,17 +124,15 @@
 // end. The clocks were never fairly tested; 100 MHz ran fine afterwards.
 #define DISPLAY_FRAME_SKIP	1
 
-#define NES_WIDTH		256		// what the core renders
-#define NES_HEIGHT		240
-
 #if NES_FILL_WIDTH
 #define NES_OUT_WIDTH		320		// what reaches the panel
 #else
 #define NES_OUT_WIDTH		NES_WIDTH
 #endif
 
-#define NES_OFFSET_X		((ST7789_WIDTH - NES_OUT_WIDTH) / 2)
-#define NES_OFFSET_Y		((ST7789_HEIGHT - NES_HEIGHT) / 2)
+// The ST7789 path scales width only; the NES 240 rows map straight to the
+// panel's 240.
+#define NES_OUT_HEIGHT		NES_HEIGHT
 
 // GamePi20 wiring. MISO (BCM 9) is not connected, which is fine: the panel is
 // only ever written to.
@@ -131,3 +188,12 @@
 // the pico build is big endian RGB565; circle-arcade needs FALSE instead,
 // because its LMI assets are plain RGB565.
 #define ST7789_SWAP_COLOR_BYTES	TRUE
+
+#endif	// PANEL_MHS35 / GamePi20
+
+// ---- Common ----------------------------------------------------------------
+
+// The scaled frame fills the panel, so the offsets are 0 on both; the general
+// form leaves room for a smaller centred image (NES_FILL_WIDTH 0).
+#define NES_OFFSET_X		((ST7789_WIDTH - NES_OUT_WIDTH) / 2)
+#define NES_OFFSET_Y		((ST7789_HEIGHT - NES_OUT_HEIGHT) / 2)

@@ -378,6 +378,11 @@ Working on hardware: picture, colour, buttons, sound, frame pacing, the ROM
 menu, cart battery saves and USB transfer mode. See
 [Not done yet](#not-done-yet) for what is left.
 
+**The same port also builds for a Pi 2B/3B with a goodtft MHS35 (ILI9486,
+480x320) panel and a USB gamepad** — `make MHS35=1`. See
+[The MHS35 / Pi 3B variant](#the-mhs35--pi-3b-variant); everything in this
+section is the GamePi20/Zero default unless noted.
+
 The display driver, pin numbers and the bring-up approach come from the
 `circle-arcade` project (github.com/chneeb/circle-arcade), which was taken
 through the same hardware first. Its CLAUDE.md documents how each value was
@@ -898,8 +903,84 @@ it comes out of the slack already in the frame rather than adding to it, and
 EMMC is a different peripheral from the panel's SPI so it does not disturb the
 transfer in flight.
 
+### The MHS35 / Pi 3B variant
+
+The same Circle port also builds for a **goodtft MHS35 (ILI9486, 480x320) on a
+Raspberry Pi 2B/3B**, selected at build time. It is a second panel and board
+sharing everything above; only the display driver, the scaling, and the input
+differ. Verified on a Pi 3B: menu, game video and gamepad all working.
+
+```bash
+cd software/infones/circle
+make MHS35=1          # -DPANEL_MHS35, RASPPI=2 -> kernel7.img
+```
+
+Circle must be configured `RASPPI=2` (`./configure -r 2 -f` in `circle/`, then
+`./makeall` and the addon builds). `RASPPI=2` boots on both Pi 2B and Pi 3B
+(shared peripheral base) and produces `kernel7.img`, which the firmware
+auto-selects. SD card: MBR + FAT32 (a GPT card leaves a Pi 3B dead at power-on),
+the Circle boot files, `config.txt` (a plain `config32.txt` — no core pinning
+needed, the ILI9486 runs at a fixed rate), `kernel7.img`, and `/nes/*.nes`.
+
+**Panel selection.** `DisplayConfig.h` branches on `PANEL_MHS35` and defines a
+`CPanelDisplay` typedef — `CILI9486DMADisplay` or `CST7789DMADisplay`, same
+constructor signature, both `CDisplay` subclasses — so the kernel treats them
+alike. The Makefile compiles only the selected driver. The historical `ST7789_*`
+config names are reused for whichever panel is built.
+
+**The ILI9486 needs a 16-bit register interface (`regwidth = 16`) — the one
+non-obvious thing.** Every command and parameter goes out as a 16-bit word
+(`0x00` high byte, value low byte), matching the goodtft `mhs35` overlay
+(`dmesg`: `regwidth = 16`) and Linux fbtft's `write_reg16_bus8`. Sending 8-bit
+commands leaves the controller latching half a word each time and it desyncs
+forever, staying **dead white with no other symptom**. `ST7789` is a true 8-bit
+controller, so this is ILI9486-specific and cost a long diagnostic session
+(register dumps to SD all read correct) before the Linux driver revealed it.
+`CILI9486DMADisplay` does the 16-bit framing in `Command`/`Data`; the DMA pixel
+path (RGB565, chunked, hand-CS) is identical to `ST7789DMADisplay`. Other
+confirmed facts: SPI **mode 0**, hardware **CE0**, LCD has **no MISO** (touch is
+on CE1), backlight hardwired on, MADCTL **0xE8** (landscape, rotate-270).
+
+**Scaling.** The NES 256x240 frame is nearest-neighbour scaled to fill 480x320
+in both axes (`ScaleFrame` in `InfoNES_System_Circle.cpp`, now with a row table
+as well as a column table; on the GamePi20 the row table is the identity and it
+is the old width-only behaviour). It fills the panel, slightly wide (panel 3:2,
+NES 4:3), the same trade the GamePi20 makes.
+
+**Input is a USB gamepad**, not GPIO buttons (`ReadPad` branches on
+`PANEL_MHS35`). The HCI + discovery + hat/axis normalisation are lifted from
+`circle-arcade`, which uses the same pad. That pad is a **"SimpleGamePad"**
+whose bits do NOT follow Circle's semantic button names — read off the hardware:
+
+| X | A | B | Y | L | R | Select | Start |
+|---|---|---|---|---|---|---|---|
+| 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x100 | 0x200 |
+
+Circle's `GamePadButtonA` is `0x200`, which is actually this pad's **Start** —
+mapping by name sent Start to NES A. NES A←A, B←B, Select←Select, Start←Start;
+d-pad via the normalised `GamePadButtonUp/Down/Left/Right`; X/Y/L/R free.
+
+**USB transfer mode is compiled out** (`#ifndef PANEL_MHS35`): the Pi 2B/3B USB
+is host-only behind the LAN9514 hub and cannot be a gadget at all. **Sound is
+off** (`SOUND_ENABLED 0` for `PANEL_MHS35`) — the Pi's PWM audio routing differs
+from the Zero's and this rig has no speaker; a later step.
+
+**`mhs35probe/`** is a standalone throwaway bring-up tool (its own Makefile,
+shares nothing but the driver). It went through register-dump diagnostics, a
+polled colour-bar test, and a DMA/landscape/scaling test; its final state drives
+`CILI9486DMADisplay` directly. Handy for isolating a panel problem from the
+emulator.
+
 ### Not done yet
 
+- **MHS35 sound** — off for now; the Pi 2B/3B has a real headphone jack, so drop
+  the Zero-only PWM symbols and use Circle's standard PWM-to-jack.
+- **MHS35 speed** — the SPI clock is a conservative fixed 48 MHz
+  (`CILI9486DMADisplay::TargetClock`). Linux drives this panel at 133 MHz, so
+  there is ~2.5x of picture smoothness to reclaim. The game already runs at
+  correct 60 Hz regardless (the frame-drop pacing), so this is smoothness only.
+- **MHS35 aspect ratio** — currently fills 480x320 (slightly wide). A
+  pillar-boxed 4:3 option would be `NES_FILL_WIDTH 0` plus centring.
 - Save states (a full machine snapshot, as opposed to the cart battery above).
   The core has no interface for it: `A/X/Y/SP/F` are file-scope in `K6502.cpp`
   and not in `K6502.h`; `ROMBANK`/`PPUBANK`/`SRAMBANK` are raw pointers that
