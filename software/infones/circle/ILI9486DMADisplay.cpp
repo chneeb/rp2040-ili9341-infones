@@ -39,6 +39,7 @@ CILI9486DMADisplay::CILI9486DMADisplay (CInterruptSystem *pInterrupt,
 	m_CPHA (CPHA),
 	m_uchMADCTL (uchMADCTL),
 	m_SPIMaster (pInterrupt, nClockSpeed, CPOL, CPHA, FALSE),
+	m_nCoreAtInit (CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE)),
 	m_pFrameBuffer (0),
 	m_pDummyRXBuffer (0),
 	m_bTransferActive (FALSE),
@@ -230,6 +231,35 @@ void CILI9486DMADisplay::WaitForTransfer (void)
 	{
 		// The completion routine runs from the DMA interrupt.
 	}
+}
+
+void CILI9486DMADisplay::SetTargetClock (unsigned nTargetHz)
+{
+	unsigned nCoreNow = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);
+	if (nCoreNow == 0 || m_nCoreAtInit == 0 || m_bTransferActive)
+	{
+		return;
+	}
+
+	// Scale the request by how far the core has moved since construction:
+	// CSPIMasterDMA divides by the core rate it captured then, which is stale,
+	// so this keeps the actual rate at nTargetHz whatever the core is doing.
+	u64 nRequest = (u64) nTargetHz * m_nCoreAtInit / nCoreNow;
+
+	// Hard safety cap: a misread core (or an unpinned one caught boosting
+	// between the once-a-second re-aims) must never drive the panel arbitrarily
+	// fast.
+	if (nRequest > SPI_CLOCK_CEILING)
+	{
+		nRequest = SPI_CLOCK_CEILING;
+	}
+	if (nRequest == 0)
+	{
+		return;
+	}
+
+	m_nClockSpeed = (unsigned) nRequest;
+	m_SPIMaster.SetClock (m_nClockSpeed);
 }
 
 void CILI9486DMADisplay::StartNextChunk (void)

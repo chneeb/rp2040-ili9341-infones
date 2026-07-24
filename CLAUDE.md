@@ -918,9 +918,14 @@ make MHS35=1          # -DPANEL_MHS35, RASPPI=2 -> kernel7.img
 Circle must be configured `RASPPI=2` (`./configure -r 2 -f` in `circle/`, then
 `./makeall` and the addon builds). `RASPPI=2` boots on both Pi 2B and Pi 3B
 (shared peripheral base) and produces `kernel7.img`, which the firmware
-auto-selects. SD card: MBR + FAT32 (a GPT card leaves a Pi 3B dead at power-on),
-the Circle boot files, `config.txt` (a plain `config32.txt` — no core pinning
-needed, the ILI9486 runs at a fixed rate), `kernel7.img`, and `/nes/*.nes`.
+auto-selects. Circle must be configured **without** the Zero-only `*_ON_ZERO`
+PWM audio symbols (which is the default — `configure -r 2 -f` sets none), so
+audio routes to the Pi's real jack; see Sound below. SD card: MBR + FAT32 (a GPT
+card leaves a Pi 3B dead at power-on), the Circle boot files, `config.txt`
+(a `config32.txt` with **`core_freq=250` + `core_freq_min=250` added above the
+`[pi4]`/`[cm4]` markers** — the SPI rate is a divisor of the core clock, so
+pinning the core keeps it stable; see Speed below), `kernel7.img`, and
+`/nes/*.nes`.
 
 **Panel selection.** `DisplayConfig.h` branches on `PANEL_MHS35` and defines a
 `CPanelDisplay` typedef — `CILI9486DMADisplay` or `CST7789DMADisplay`, same
@@ -961,9 +966,28 @@ mapping by name sent Start to NES A. NES A←A, B←B, Select←Select, Start←
 d-pad via the normalised `GamePadButtonUp/Down/Left/Right`; X/Y/L/R free.
 
 **USB transfer mode is compiled out** (`#ifndef PANEL_MHS35`): the Pi 2B/3B USB
-is host-only behind the LAN9514 hub and cannot be a gadget at all. **Sound is
-off** (`SOUND_ENABLED 0` for `PANEL_MHS35`) — the Pi's PWM audio routing differs
-from the Zero's and this rig has no speaker; a later step.
+is host-only behind the LAN9514 hub and cannot be a gadget at all.
+
+**Sound** goes to the Pi's 3.5mm jack. `CPWMSoundBaseDevice` picks the analog
+audio pins (GPIO 40/41, via Circle's virtual `GPIOPinAudioLeft/Right`)
+automatically on a Pi 3 when the `*_ON_ZERO` symbols are absent — so it works
+with no pin config, just `SOUND_ENABLED 1`. The whole InfoNES→queue→PWM path is
+the same code the GamePi20 uses. The one board difference: the jack is
+**stereo**, so `SoundOpen` sets 2 channels and `SoundWrite` duplicates each mono
+NES sample to L+R (`#ifdef PANEL_MHS35`); writing 1 channel left the right side
+undriven, heard as noise. No volume control is mapped yet (L/R are free), so the
+level is `VOLUME_DEFAULT`.
+
+**Speed.** The SPI bus runs at 100 MHz requested — `CILI9486DMADisplay`'s
+`SPI_CLOCK_HZ`, held there by `SetTargetClock` (re-aimed once a second against
+the current core, mirroring the ST7789 path) with a 120 MHz hard ceiling. At
+the pinned `core_freq=250` the divisor is ÷2, so the actual bus is ~125 MHz
+(under Linux's proven 133) — the fastest clean divisor at that core. **Pin the
+core** (config.txt, above): unpinned, a core boost to ~400 would double the
+rate between re-aims. 100 MHz is the practical ceiling — true 60 Hz picture
+would need ~148 MHz (a 480x320 frame is 307 KB, ~19.7 ms at 125 MHz against a
+16.6 ms budget), past what the panel is known to take, so the picture runs
+~30 Hz while the game stays 60.
 
 **`mhs35probe/`** is a standalone throwaway bring-up tool (its own Makefile,
 shares nothing but the driver). It went through register-dump diagnostics, a
@@ -973,12 +997,9 @@ emulator.
 
 ### Not done yet
 
-- **MHS35 sound** — off for now; the Pi 2B/3B has a real headphone jack, so drop
-  the Zero-only PWM symbols and use Circle's standard PWM-to-jack.
-- **MHS35 speed** — the SPI clock is a conservative fixed 48 MHz
-  (`CILI9486DMADisplay::TargetClock`). Linux drives this panel at 133 MHz, so
-  there is ~2.5x of picture smoothness to reclaim. The game already runs at
-  correct 60 Hz regardless (the frame-drop pacing), so this is smoothness only.
+- **MHS35 volume control** — the level is fixed at `VOLUME_DEFAULT`; the free
+  L/R shoulder buttons could drive it up/down (there is no volume UI/state to
+  persist on this board yet).
 - **MHS35 aspect ratio** — currently fills 480x320 (slightly wide). A
   pillar-boxed 4:3 option would be `NES_FILL_WIDTH 0` plus centring.
 - Save states (a full machine snapshot, as opposed to the cart battery above).

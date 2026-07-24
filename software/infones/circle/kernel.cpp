@@ -505,7 +505,14 @@ int CKernel::SoundOpen (int nSampleRate)
 		return -1;
 	}
 
+#ifdef PANEL_MHS35
+	// The Pi 3B jack is stereo; the NES audio is mono. Two channels here, with
+	// SoundWrite duplicating each sample to both, so both sides play. The
+	// GamePi20 wires one PWM pin only, so it stays mono.
+	m_pSound->SetWriteFormat (SoundFormatUnsigned8, 2);
+#else
 	m_pSound->SetWriteFormat (SoundFormatUnsigned8, 1);
+#endif
 
 	if (!m_pSound->Start ())
 	{
@@ -564,7 +571,31 @@ int CKernel::SoundWrite (const unsigned char *pSamples, int nCount)
 		return nCount;
 	}
 
+#ifdef PANEL_MHS35
+	// Mono -> stereo: duplicate each 8-bit sample into an interleaved L/R pair
+	// so both sides of the jack play. One queue frame is one stereo pair, i.e.
+	// one mono sample, so the buffer-room accounting is unchanged.
+	static unsigned char Stereo[2 * 1024];
+	int nDone = 0;
+	while (nDone < nCount)
+	{
+		int nChunk = nCount - nDone;
+		if (nChunk > 1024)
+		{
+			nChunk = 1024;
+		}
+		for (int i = 0; i < nChunk; i++)
+		{
+			Stereo[2 * i]     = pSamples[nDone + i];
+			Stereo[2 * i + 1] = pSamples[nDone + i];
+		}
+		m_pSound->Write (Stereo, nChunk * 2);
+		nDone += nChunk;
+	}
+	return nCount;
+#else
 	return m_pSound->Write (pSamples, nCount);
+#endif
 }
 
 // Room left to write into, which is what the APU means by "buffer size": it

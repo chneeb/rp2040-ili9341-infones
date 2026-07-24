@@ -55,13 +55,19 @@ public:
 	/// \return Is a frame still going out?
 	boolean IsBusy (void) const	{ return m_bTransferActive; }
 
-	// For interface parity with CST7789DMADisplay, so the kernel can treat the
-	// two panels the same. Unlike the ST7789 path this runs at a fixed rate -
-	// the ILI9486 has plenty of headroom (Linux drives it at 133 MHz) and no
-	// picture-rate-from-config.txt story - so there is no dynamic clock to hold:
-	// TargetClock() is that fixed rate and SetTargetClock() does nothing.
-	static unsigned TargetClock (void)	{ return 48000000; }
-	void SetTargetClock (unsigned nTargetHz) { (void) nTargetHz; }
+	// The rate the panel is driven at, in Hz. Held there whatever the core
+	// clock is doing - see SetTargetClock. Linux drives this panel at 133 MHz,
+	// so 100 MHz has margin; SPI_CLOCK_CEILING is the hard safety limit.
+	static const unsigned SPI_CLOCK_HZ	= 100000000;
+	static const unsigned SPI_CLOCK_CEILING	= 120000000;
+
+	static unsigned TargetClock (void)	{ return SPI_CLOCK_HZ; }
+
+	// Re-aim the bus at nTargetHz against the core clock as it is now. The core
+	// moves on its own (roughly 250 MHz idle, 400 under load) and Circle fixes
+	// the divisor once at init, so without this a rate that was safe at boot
+	// doubles when the core boosts. The kernel calls this once a second.
+	void SetTargetClock (unsigned nTargetHz);
 
 private:
 	// 16-bit register interface: each command/parameter is one 16-bit word.
@@ -87,6 +93,8 @@ private:
 	CGPIOPin      m_ResetPin;
 	CGPIOPin      m_BackLightPin;
 	CGPIOPin      m_CSPin;
+
+	unsigned m_nCoreAtInit;		// core clock captured at construction
 
 	u8 *m_pFrameBuffer;
 	u8 *m_pDummyRXBuffer;

@@ -29,13 +29,11 @@
 // then fails, APU_Mute stays set, and the APU does no work at all - so this
 // also frees the CPU time the mixing took, and leaves GPIO 18 undriven.
 //
-// Off for the MHS35/Pi 3B bring-up: that board's PWM audio routing differs from
-// the Zero's (and this rig has no speaker), so sound is a later step.
-#ifdef PANEL_MHS35
-#define SOUND_ENABLED		0
-#else
+// On for both. The MHS35/Pi 3B routes PWM audio to the board's real 3.5mm jack
+// (GPIO 40/41, via Circle's virtual GPIOPinAudioLeft/Right) - no Zero-only
+// *_ON_ZERO overrides in the Circle config, so CPWMSoundBaseDevice picks the
+// jack automatically. Plug headphones or powered speakers into the Pi's jack.
 #define SOUND_ENABLED		1
-#endif
 
 // USB vendor and product ID for the mass storage gadget.
 //
