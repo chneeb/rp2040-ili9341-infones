@@ -1007,8 +1007,30 @@ emulator.
 
 ### Not done yet
 
-- **MHS35 aspect ratio** — currently fills 480x320 (slightly wide). A
-  pillar-boxed 4:3 option would be `NES_FILL_WIDTH 0` plus centring.
+- **MHS35 aspect ratio.** Currently fills 480x320. This is really an *NTSC*
+  problem, because NTSC and PAL differ in pixel aspect:
+  - **PAL** pixels are wide (~1.39), so 256x240 is ~1.48 - almost exactly the
+    panel's 3:2. Filling gives ~1.41, only ~1.4% off (invisible). And PAL runs
+    at 50 Hz (20 ms budget), so the ~19.7 ms full-panel transfer at 125 MHz
+    *fits* - PAL already gets full screen + correct aspect + 50 Hz. No change
+    wanted.
+  - **NTSC** pixels are near-square (~1.14, or 1.25 by the 4:3 convention), so
+    filling stretches it ~12-23% too wide, and the 19.7 ms transfer overruns
+    the 16.64 ms (60 Hz) budget -> ~30 Hz.
+  So the fixes are NTSC-only. Two options:
+  - **Pillar-box 400x300** (`NES_OUT_WIDTH/HEIGHT` in the MHS35 branch): correct
+    4:3 *and* 60 Hz at the safe 125 MHz, with ~40 px side / 10 px top-bottom
+    bars. Two-line change. (416x312 would fill more but needs ~128 MHz, above
+    this panel's safe ceiling - 133 MHz white-screened.)
+  - **Per-region aspect** (the nice one): the port already knows NTSC vs PAL, so
+    fill the panel for PAL (correct, 50 Hz) and pillar-box to 4:3 for NTSC
+    (correct, 60 Hz) - both regions correct automatically. Needs
+    `NES_OUT_WIDTH/HEIGHT` to become runtime values chosen at ROM load rather
+    than compile-time macros (they feed the scaler tables, the SetArea window
+    and the offsets), so a bigger change than the two-liner.
+  Cropping the NES to fill at correct aspect is out: on a *wider* panel that
+  means cropping top/bottom (~27 rows), which clips status bars, and it does not
+  help 60 Hz anyway (a filled panel always transfers the full 480x320).
 - Save states (a full machine snapshot, as opposed to the cart battery above).
   The core has no interface for it: `A/X/Y/SP/F` are file-scope in `K6502.cpp`
   and not in `K6502.h`; `ROMBANK`/`PPUBANK`/`SRAMBANK` are raw pointers that
