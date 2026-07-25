@@ -1028,6 +1028,43 @@ emulator.
 
 ### Not done yet
 
+- **Simultaneous HDMI output** (alongside the SPI panel). Feasible - assessed,
+  not built. HDMI and the SPI panel are independent hardware (HDMI via the
+  VideoCore firmware, SPI via Circle's DMA), so both run at once with no
+  contention, and the same code would serve both boards (their SPI panel as the
+  handheld view, HDMI as a docked-TV view).
+  - **Why it's attractive:** HDMI has none of the SPI bandwidth wall, so it can
+    show NES at **full 60 Hz, correct 4:3 aspect** (e.g. a 640x480 mode) - the
+    thing the SPI panel fundamentally cannot do at 480x320. The SPI panel stays
+    the handheld view (~30 Hz NTSC); HDMI is the compromise-free TV output.
+  - **Video:** Circle `CBcmFrameBuffer` - set up a framebuffer, and each
+    emulated frame scale-and-copy the 256x240 NES frame into it (a second
+    scaler beside the SPI one in `PresentFrame`). The GPU scans it to HDMI on
+    its own at the HDMI refresh rate; no per-scanline work. From one 60 Hz
+    emulation, HDMI shows all 60, SPI drops to 30 - each output takes what its
+    bus allows.
+  - **Audio:** Circle has `CHDMISoundBaseDevice` (same `CSoundBaseDevice` queue
+    API as the PWM jack), plus a firmware-routed `CVCHIQSoundBaseDevice` (vc4
+    addon) fallback. Either switch to HDMI audio when docked, or run both jack +
+    HDMI (feed two devices). **The wrinkle: HDMI needs a standard sample rate**
+    (44.1/48 kHz), not the APU's 22050 - run the APU at 44100 (`pAPU_QUALITY 3`)
+    for HDMI. And **the PAL pitch trick breaks over HDMI**: PAL currently opens
+    the device slow (18347 Hz), which is not a legal HDMI rate, so PAL-over-HDMI
+    needs real resampling or a different approach (NTSC-over-HDMI at 44100 is
+    clean).
+  - **Per board:** Pi 3B does all this comfortably (spare cores to offload to).
+    The Pi Zero is single-core ARM11 @ 1 GHz with no offload - emulation + two
+    video scales + HDMI audio on one core is the tight case; profile it and be
+    ready to drop the HDMI resolution. Also the GamePi20's mini-HDMI may be
+    physically enclosed in the case.
+  - **Gotchas:** config.txt may need `hdmi_force_hotplug=1` + a mode if no
+    monitor is present at boot; keep the HDMI path graceful (skip it if the
+    framebuffer init fails, so the SPI panel is unaffected). Verify
+    `CHDMISoundBaseDevice`'s supported rates and whether it needs the framebuffer
+    up first before committing to the 44100 path.
+  - Build order if attempted: Pi 3B/MHS35 first (comfortable), video before
+    audio, HDMI path optional throughout.
+
 - **MHS35 aspect ratio.** Currently fills 480x320. This is really an *NTSC*
   problem, because NTSC and PAL differ in pixel aspect:
   - **PAL** pixels are wide (~1.39), so 256x240 is ~1.48 - almost exactly the
