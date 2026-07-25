@@ -38,6 +38,9 @@ public:
 
 private:
 	void Draw (void);
+	// Push the drawn frame to the panel, and mirror it to HDMI if present, so
+	// the menu shows on both outputs like the game does.
+	void PushDisplay (void);
 
 	CPanelDisplay *m_pDisplay;
 	C2DGraphics m_Graphics;

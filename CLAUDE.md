@@ -1026,44 +1026,69 @@ polled colour-bar test, and a DMA/landscape/scaling test; its final state drives
 `CILI9486DMADisplay` directly. Handy for isolating a panel problem from the
 emulator.
 
+### Simultaneous HDMI output (both boards, video)
+
+The emulator drives **HDMI at 640x480 at the same time as the SPI panel** -
+handheld panel plus a docked-TV view - on both the MHS35/Pi 3B and the
+GamePi20/Pi Zero. Verified on hardware. Video only so far; HDMI audio is still
+open (see Not done yet). Gated by `HDMI_OUTPUT` in DisplayConfig.h (1 for both
+panels now).
+
+**Independent hardware, no contention.** HDMI is the VideoCore's framebuffer
+(`CBcmFrameBuffer`), scanned out by the GPU on its own; the SPI panel is
+Circle's DMA. So both run at once, and HDMI has **none of the SPI bandwidth
+wall** - it shows the full 60 Hz (NTSC) / 50 Hz (PAL) while the SPI panel keeps
+its bandwidth-limited rate, both from the one emulation.
+
+**How it is wired:**
+- `CKernel::PresentHDMI(pSrc, srcW, srcH)` nearest-neighbour scales any RGB565
+  source to fill the 640x480 framebuffer, and **byte-swaps each pixel**: the NES
+  palette and the C2DGraphics buffer are big-endian RGB565 (for the RGB565_BE
+  panel), the framebuffer is native RGB565. Source tables are recomputed only
+  when the source size changes, so the game path stays free.
+- The **game** calls it with the raw 256x240 frame from `InfoNES_LoadFrame`
+  (`GamePi20_PresentHDMI`), every frame.
+- The **menu** reaches HDMI too: `CRomMenu::PushDisplay()` does the panel
+  `UpdateDisplay()` then mirrors the C2DGraphics off-screen buffer
+  (`GetBuffer()`, panel size) to HDMI. All three menu update points call it, so
+  every menu state shows on both.
+- **Graceful:** `CBcmFrameBuffer::Initialize()` fails if no monitor is present
+  at boot (EDID); then `m_pHDMI` is 0 and every HDMI call is a no-op - the panel
+  is unaffected. So HDMI is a "connect before power-on" (boot-time) output, not
+  hotplug.
+
+**Notes / caveats:**
+- Colours are byte-swapped as above; if HDMI colour ever looks wrong the swap or
+  the framebuffer's RGB-vs-BGR order is the first thing to check.
+- The menu mirror assumes the C2DGraphics buffer row stride equals its width; if
+  the menu is ever skewed on HDMI, use the real stride.
+- 640x480 fill is correct 4:3 by the CRT convention; the aspect note below still
+  applies to the *panel*, not HDMI (HDMI has the bandwidth to be correct).
+- **Pi Zero is single-core** (ARM11) with no offload, yet runs the game at speed
+  with HDMI + panel at 640x480 - confirmed. Its backlight is GPIO so it *could*
+  be switched off when docked (see Not done yet); the MHS35's is hardwired on.
+
 ### Not done yet
 
-- **Simultaneous HDMI output** (alongside the SPI panel). Feasible - assessed,
-  not built. HDMI and the SPI panel are independent hardware (HDMI via the
-  VideoCore firmware, SPI via Circle's DMA), so both run at once with no
-  contention, and the same code would serve both boards (their SPI panel as the
-  handheld view, HDMI as a docked-TV view).
-  - **Why it's attractive:** HDMI has none of the SPI bandwidth wall, so it can
-    show NES at **full 60 Hz, correct 4:3 aspect** (e.g. a 640x480 mode) - the
-    thing the SPI panel fundamentally cannot do at 480x320. The SPI panel stays
-    the handheld view (~30 Hz NTSC); HDMI is the compromise-free TV output.
-  - **Video:** Circle `CBcmFrameBuffer` - set up a framebuffer, and each
-    emulated frame scale-and-copy the 256x240 NES frame into it (a second
-    scaler beside the SPI one in `PresentFrame`). The GPU scans it to HDMI on
-    its own at the HDMI refresh rate; no per-scanline work. From one 60 Hz
-    emulation, HDMI shows all 60, SPI drops to 30 - each output takes what its
-    bus allows.
-  - **Audio:** Circle has `CHDMISoundBaseDevice` (same `CSoundBaseDevice` queue
-    API as the PWM jack), plus a firmware-routed `CVCHIQSoundBaseDevice` (vc4
-    addon) fallback. Either switch to HDMI audio when docked, or run both jack +
-    HDMI (feed two devices). **The wrinkle: HDMI needs a standard sample rate**
-    (44.1/48 kHz), not the APU's 22050 - run the APU at 44100 (`pAPU_QUALITY 3`)
-    for HDMI. And **the PAL pitch trick breaks over HDMI**: PAL currently opens
-    the device slow (18347 Hz), which is not a legal HDMI rate, so PAL-over-HDMI
-    needs real resampling or a different approach (NTSC-over-HDMI at 44100 is
-    clean).
-  - **Per board:** Pi 3B does all this comfortably (spare cores to offload to).
-    The Pi Zero is single-core ARM11 @ 1 GHz with no offload - emulation + two
-    video scales + HDMI audio on one core is the tight case; profile it and be
-    ready to drop the HDMI resolution. Also the GamePi20's mini-HDMI may be
-    physically enclosed in the case.
-  - **Gotchas:** config.txt may need `hdmi_force_hotplug=1` + a mode if no
-    monitor is present at boot; keep the HDMI path graceful (skip it if the
-    framebuffer init fails, so the SPI panel is unaffected). Verify
-    `CHDMISoundBaseDevice`'s supported rates and whether it needs the framebuffer
-    up first before committing to the 44100 path.
-  - Build order if attempted: Pi 3B/MHS35 first (comfortable), video before
-    audio, HDMI path optional throughout.
+- **HDMI audio.** The video half is done (above); audio still only goes to the
+  PWM jack. Circle has `CHDMISoundBaseDevice` (same `CSoundBaseDevice` queue API
+  as the PWM device) and a firmware-routed `CVCHIQSoundBaseDevice` (vc4 addon)
+  fallback. The wrinkles: HDMI needs a **standard sample rate** (44.1/48 kHz),
+  not the APU's 22050 - run the APU at 44100 (`pAPU_QUALITY 3`); and **the PAL
+  pitch trick breaks over HDMI** (PAL opens the device at 18347 Hz, not a legal
+  HDMI rate), so PAL-over-HDMI needs real resampling. Either switch to HDMI
+  audio when docked, or feed both jack + HDMI. Verify `CHDMISoundBaseDevice`'s
+  rates and whether it needs the framebuffer up first.
+
+- **Turn the TFT off when HDMI is connected** (parked). When docked, the
+  handheld panel is redundant. Gating the SPI present + (GamePi20) the backlight
+  pin on `m_pHDMI != 0` would save power (real on the GamePi20 - its backlight
+  is GPIO; the MHS35's is hardwired on) and a little CPU (skipping the panel's
+  256->320 scale, ~20% of the scaling work, ~0.5-1 ms/frame) - headroom you
+  could reinvest in a higher HDMI resolution, most useful on the single-core
+  Zero. Small change (a runtime check + a config toggle so "both screens" stays
+  possible). Caveat: HDMI is detected at boot, so this is dock-and-boot, not
+  hotplug.
 
 - **MHS35 aspect ratio.** Currently fills 480x320. This is really an *NTSC*
   problem, because NTSC and PAL differ in pixel aspect:

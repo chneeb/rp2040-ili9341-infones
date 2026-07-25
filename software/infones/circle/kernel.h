@@ -26,6 +26,9 @@
 class CRomMenu;
 
 #include "DisplayConfig.h"
+#if HDMI_OUTPUT
+#include <circle/bcmframebuffer.h>
+#endif
 #include "InputConfig.h"
 
 enum TShutdownMode
@@ -46,6 +49,12 @@ public:
 
 	// Reached from the InfoNES platform layer through GamePi20.h.
 	void PresentFrame (const u16 *pFrame);
+#if HDMI_OUTPUT
+	// Scale an RGB565 (big-endian) source of srcW x srcH into the HDMI
+	// framebuffer, if present. Used for both the emulator frame (256x240) and
+	// the menu's own buffer (panel size), so the whole UI reaches HDMI.
+	void PresentHDMI (const u16 *pSrc, unsigned srcW, unsigned srcH);
+#endif
 	boolean DisplayBusy (void) const	{ return m_Display.IsBusy (); }
 	unsigned ReadPad (void);
 	void WaitForNextFrame (void);
@@ -106,6 +115,9 @@ private:
 	CInterruptSystem	m_Interrupt;
 	CTimer			m_Timer;
 	CPanelDisplay		m_Display;
+#if HDMI_OUTPUT
+	CBcmFrameBuffer *	m_pHDMI = 0;	// 0 if no HDMI display was found
+#endif
 	CEMMCDevice		m_EMMC;
 	FATFS			m_FileSystem;
 

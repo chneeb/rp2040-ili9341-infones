@@ -107,6 +107,17 @@ boolean CKernel::Initialize (void)
 	InitializeButtons ();
 #endif
 
+#if HDMI_OUTPUT
+	// Optional: a second, independent output. Failure here (no monitor) is not
+	// fatal - the SPI panel is the primary display.
+	m_pHDMI = new CBcmFrameBuffer (HDMI_WIDTH, HDMI_HEIGHT, 16);
+	if (m_pHDMI == 0 || !m_pHDMI->Initialize ())
+	{
+		delete m_pHDMI;
+		m_pHDMI = 0;
+	}
+#endif
+
 	return TRUE;
 }
 
@@ -398,6 +409,61 @@ void CKernel::PresentFrame (const u16 *pFrame)
 
 	m_Display.SetArea (Area, pFrame);
 }
+
+#if HDMI_OUTPUT
+
+// Scale the raw 256x240 NES frame to fill the HDMI framebuffer (nearest
+// neighbour, tables worked out once) and write it. The GPU scans the buffer to
+// HDMI on its own, so this is just a memory write - no bus contention with the
+// SPI panel, and it runs every frame (HDMI has none of the SPI bandwidth wall).
+//
+// The NES palette is big-endian RGB565 (prepared for the RGB565_BE SPI panel);
+// the framebuffer is native RGB565, so each pixel is byte-swapped. If HDMI
+// colours come out wrong (e.g. red/blue swapped), it is this swap or the
+// framebuffer's RGB-vs-BGR order - the first thing to try is dropping the swap.
+void CKernel::PresentHDMI (const u16 *pSrc, unsigned srcW, unsigned srcH)
+{
+	if (m_pHDMI == 0 || srcW == 0 || srcH == 0)
+	{
+		return;
+	}
+
+	// The tables depend on the source size, which alternates between the
+	// emulator frame (256x240) and the menu (panel size). Recompute only when
+	// it changes, so the common case (same size frame after frame) is free.
+	static unsigned s_Col[HDMI_WIDTH];
+	static unsigned s_Row[HDMI_HEIGHT];
+	static unsigned s_LastW = 0, s_LastH = 0;
+	if (srcW != s_LastW || srcH != s_LastH)
+	{
+		for (unsigned x = 0; x < HDMI_WIDTH; x++)
+		{
+			s_Col[x] = x * srcW / HDMI_WIDTH;
+		}
+		for (unsigned y = 0; y < HDMI_HEIGHT; y++)
+		{
+			s_Row[y] = y * srcH / HDMI_HEIGHT;
+		}
+		s_LastW = srcW;
+		s_LastH = srcH;
+	}
+
+	u8 *pBase = (u8 *) (uintptr) m_pHDMI->GetBuffer ();
+	unsigned nPitch = m_pHDMI->GetPitch ();		// bytes per row (may be padded)
+
+	for (unsigned y = 0; y < HDMI_HEIGHT; y++)
+	{
+		const u16 *pRow = &pSrc[s_Row[y] * srcW];
+		u16 *pDst = (u16 *) (pBase + y * nPitch);
+
+		for (unsigned x = 0; x < HDMI_WIDTH; x++)
+		{
+			pDst[x] = __builtin_bswap16 (pRow[s_Col[x]]);
+		}
+	}
+}
+
+#endif	// HDMI_OUTPUT
 
 // NTSC NES runs at 60.0988 Hz, which is 16639 us a frame. The pico build uses
 // 16666 (a flat 60 Hz); the difference is small but it is free to get right,
@@ -844,6 +910,19 @@ void GamePi20_PresentFrame (const unsigned short *pFrame)
 	assert (pKernel != 0);
 
 	pKernel->PresentFrame ((const u16 *) pFrame);
+}
+
+void GamePi20_PresentHDMI (const unsigned short *pSrc, unsigned nWidth, unsigned nHeight)
+{
+#if HDMI_OUTPUT
+	CKernel *pKernel = CKernel::Get ();
+	if (pKernel != 0)
+	{
+		pKernel->PresentHDMI ((const u16 *) pSrc, nWidth, nHeight);
+	}
+#else
+	(void) pSrc; (void) nWidth; (void) nHeight;
+#endif
 }
 
 unsigned GamePi20_ReadPad (void)

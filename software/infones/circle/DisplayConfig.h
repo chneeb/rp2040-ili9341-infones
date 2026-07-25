@@ -73,7 +73,25 @@ typedef CST7789DMADisplay CPanelDisplay;
 // The NES palette is big endian RGB565.
 #define ST7789_SWAP_COLOR_BYTES	TRUE
 
+// Simultaneous HDMI output (the Pi 3B has HDMI). The SPI panel stays the
+// handheld view; HDMI is a full-60 Hz, correct-4:3 TV output at 640x480, driven
+// independently by the VideoCore. First iteration: video only, and graceful -
+// if no monitor is present the framebuffer init fails and it is skipped, the
+// panel unaffected. Set to 0 to disable. See CLAUDE.md "Simultaneous HDMI".
+#define HDMI_OUTPUT		1
+#define HDMI_WIDTH		640
+#define HDMI_HEIGHT		480
+
 #else	// ==== Waveshare GamePi20 / ST7789, 320x240 ===========================
+
+// Simultaneous HDMI output on the Pi Zero. Experimental here: the Zero is a
+// single ARM11 core with no second core to offload to, so the per-frame HDMI
+// scale is on top of emulation + the ST7789 scale within one 16.6 ms budget.
+// If the game slows or the audio pitch drifts, drop HDMI_WIDTH/HEIGHT. Set
+// HDMI_OUTPUT 0 to disable.
+#define HDMI_OUTPUT		1
+#define HDMI_WIDTH		640
+#define HDMI_HEIGHT		480
 
 // Diagnostic: run the emulator and its sound, but never send a frame to the
 // panel. If a background noise in the audio disappears with this set, the

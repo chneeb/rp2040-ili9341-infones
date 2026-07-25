@@ -17,6 +17,11 @@ extern "C" {
 // transfer has started.
 void GamePi20_PresentFrame (const unsigned short *pFrame);
 
+// Hand an RGB565 (big-endian) source of nWidth x nHeight to the HDMI output,
+// scaled to fill it, if built and a monitor is present. No-op otherwise. Used
+// for both the emulator frame (256x240) and the menu buffer (panel size).
+void GamePi20_PresentHDMI (const unsigned short *pSrc, unsigned nWidth, unsigned nHeight);
+
 // Current state of the board's buttons, in InfoNES pad bits:
 // A=1, B=2, SELECT=4, START=8, UP=0x10, DOWN=0x20, LEFT=0x40, RIGHT=0x80.
 unsigned GamePi20_ReadPad (void);

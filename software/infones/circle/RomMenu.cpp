@@ -130,6 +130,17 @@ unsigned CRomMenu::Scan (const char *pDirectory)
 	return m_nCount;
 }
 
+void CRomMenu::PushDisplay (void)
+{
+	m_Graphics.UpdateDisplay ();
+
+	// Mirror the same off-screen buffer to HDMI (no-op if not built / no
+	// monitor). The buffer is the panel's RGB565 big-endian format, the same as
+	// the emulator frame, so PresentHDMI's byte-swap applies unchanged.
+	GamePi20_PresentHDMI ((const unsigned short *) m_Graphics.GetBuffer (),
+			      m_Graphics.GetWidth (), m_Graphics.GetHeight ());
+}
+
 void CRomMenu::Draw (void)
 {
 	unsigned nWidth = m_Graphics.GetWidth ();
@@ -208,7 +219,7 @@ void CRomMenu::Draw (void)
 	m_Graphics.DrawText (nWidth / 2, nHeight - FOOTER_HEIGHT, COLOUR_TEXT, Info,
 			     C2DGraphics::AlignCenter);
 
-	m_Graphics.UpdateDisplay ();
+	PushDisplay ();
 }
 
 const char *CRomMenu::Run (unsigned (*pReadPad) (void), void (*pWaitFrame) (void))
@@ -220,7 +231,7 @@ const char *CRomMenu::Run (unsigned (*pReadPad) (void), void (*pWaitFrame) (void
 				     m_Graphics.GetHeight () / 2 - 8, COLOUR_TEXT,
 				     "No .nes files in /nes",
 				     C2DGraphics::AlignCenter);
-		m_Graphics.UpdateDisplay ();
+		PushDisplay ();
 
 		return nullptr;
 	}
@@ -292,7 +303,7 @@ const char *CRomMenu::Run (unsigned (*pReadPad) (void), void (*pWaitFrame) (void
 				// the middle, so without this the menu's background
 				// would stay in the pillarbox bars either side.
 				m_Graphics.ClearScreen (COLOR2D (0, 0, 0));
-				m_Graphics.UpdateDisplay ();
+				PushDisplay ();
 
 				return m_Path;
 			}

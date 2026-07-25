@@ -164,6 +164,11 @@ int InfoNES_LoadFrame (void)
 	}
 #endif
 
+	// HDMI, if built and a monitor is present: the raw 256x240 frame, scaled
+	// independently of the SPI panel, every frame. HDMI has none of the SPI
+	// bandwidth wall, so it shows all 60 (NTSC) / 50 (PAL) while the panel drops.
+	GamePi20_PresentHDMI (s_Frame, NES_WIDTH, NES_HEIGHT);
+
 	// Before the wait, for the same reason: an SD write that fits in the slack
 	// left in this frame costs nothing. It is a different peripheral from the
 	// panel, so it does not disturb the transfer started above.
