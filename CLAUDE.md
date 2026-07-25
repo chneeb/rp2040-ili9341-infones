@@ -670,6 +670,15 @@ snapshotted when the menu opens - the menu is paced by the same code, so a live
 reading would just measure the menu. Expect 60 or 61: the target is 60.0988 Hz
 and counting whole frames in a one second window lands either side of it.
 
+**This is the game (paced) rate, NOT the picture rate.** The counter increments
+in `WaitForNextFrame`, which runs once per emulated frame unconditionally; the
+actual present is separately skipped when the bus is still busy
+(`GamePi20_DisplayBusy`). So the number confirms the emulation runs at the right
+speed for its region (60 NTSC, 50 PAL) - it does not say how many frames reached
+the panel. On a bandwidth-limited panel the picture can be half that while this
+still reads 60/50 (see the MHS35 Speed note). A true picture-rate readout would
+need a second counter incremented only on an actual present.
+
 InfoNES has no PAL support at all, so the core always runs 262 scanlines at the
 NTSC rate. The platform layer corrects most of what that costs a PAL ROM — see
 [Region](#region-ntsc-and-pal) below.
@@ -988,16 +997,28 @@ uses on its TL/TR, now taking the two button states as parameters so the GPIO
 and gamepad paths share it. Starts at `VOLUME_DEFAULT` (15, low) and is not
 persisted across reboots.
 
-**Speed.** The SPI bus runs at 100 MHz requested — `CILI9486DMADisplay`'s
-`SPI_CLOCK_HZ`, held there by `SetTargetClock` (re-aimed once a second against
-the current core, mirroring the ST7789 path) with a 120 MHz hard ceiling. At
-the pinned `core_freq=250` the divisor is ÷2, so the actual bus is ~125 MHz
-(under Linux's proven 133) — the fastest clean divisor at that core. **Pin the
-core** (config.txt, above): unpinned, a core boost to ~400 would double the
-rate between re-aims. 100 MHz is the practical ceiling — true 60 Hz picture
-would need ~148 MHz (a 480x320 frame is 307 KB, ~19.7 ms at 125 MHz against a
-16.6 ms budget), past what the panel is known to take, so the picture runs
-~30 Hz while the game stays 60.
+**Speed.** The SPI bus requests 100 MHz — `CILI9486DMADisplay`'s `SPI_CLOCK_HZ`,
+held by `SetTargetClock` (re-aimed once a second against the current core,
+mirroring the ST7789 path) with a 120 MHz hard ceiling. At the pinned
+`core_freq=250` the divisor is ÷2, so the **actual bus is ~125 MHz** - the menu
+prints 100 (the request), the wire runs 125 (250 ÷ 2). **Pin the core**
+(config.txt): unpinned, a boost to ~400 would double the rate between re-aims.
+
+**~125 MHz is this panel's real safe ceiling, NOT the 133 Linux reports.**
+`core_freq=266` (÷2 = 133 MHz actual) was tried and **white-screened** - the
+init commands corrupt at that rate on this wiring, whatever `fbtft` claims. 125
+works, 133 does not; treat anything above 125 as unsafe here. (An absolute
+request would also be dangerous: at core 250, requesting 133 divides to 1 =
+250 MHz. If SPI_CLOCK_HZ is ever raised, make it divisor-derived like the ST7789
+path so a wrong core can only slow it, not overspeed it.)
+
+**Picture rate is not the FPS the menu shows** (see Frame pacing - that is the
+game/paced rate). The picture rate is how many frames clear the bus: a full
+480x320 is 307 KB, ~19.7 ms at 125 MHz. Against NTSC's 16.6 ms budget that
+overruns -> every other frame -> **~30 Hz picture** (game still 60). Against
+PAL's 20 ms budget it fits -> **~50 Hz picture**. So on the MHS35, PAL is
+full-rate and full-fill-correct (see aspect note); NTSC is the half-rate,
+stretched one.
 
 **`mhs35probe/`** is a standalone throwaway bring-up tool (its own Makefile,
 shares nothing but the driver). It went through register-dump diagnostics, a
