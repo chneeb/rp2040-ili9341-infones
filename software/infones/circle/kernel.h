@@ -56,6 +56,10 @@ public:
 	void PresentHDMI (const u16 *pSrc, unsigned srcW, unsigned srcH);
 #endif
 	boolean DisplayBusy (void) const	{ return m_Display.IsBusy (); }
+	// Should the SPI panel be fed at all? False only when HDMI is connected at
+	// boot and the board opted to go dark then (TFT_OFF_WHEN_HDMI). The game and
+	// menu skip both the scale and the transfer when this is false.
+	boolean PanelActive (void) const	{ return m_bPanelActive; }
 	unsigned ReadPad (void);
 	void WaitForNextFrame (void);
 
@@ -118,6 +122,8 @@ private:
 #if HDMI_OUTPUT
 	CBcmFrameBuffer *	m_pHDMI = 0;	// 0 if no HDMI display was found
 #endif
+	// Cleared once at boot when HDMI is present and the board goes HDMI-only.
+	boolean			m_bPanelActive = TRUE;
 	CEMMCDevice		m_EMMC;
 	FATFS			m_FileSystem;
 

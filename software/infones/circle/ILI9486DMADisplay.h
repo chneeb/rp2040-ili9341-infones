@@ -52,6 +52,11 @@ public:
 	/// \brief Block until the frame being sent has gone out.
 	void WaitForTransfer (void);
 
+	/// \brief Turn the backlight on or off, if there is a backlight pin.
+	/// \note A no-op when the pin is None - the MHS35's backlight is hardwired
+	///	  on, so this panel can never be darkened from software.
+	void SetBacklight (boolean bOn);
+
 	/// \return Is a frame still going out?
 	boolean IsBusy (void) const	{ return m_bTransferActive; }
 

@@ -233,6 +233,14 @@ void CILI9486DMADisplay::WaitForTransfer (void)
 	}
 }
 
+void CILI9486DMADisplay::SetBacklight (boolean bOn)
+{
+	if (m_nBackLightPin != None)
+	{
+		m_BackLightPin.Write (bOn ? HIGH : LOW);
+	}
+}
+
 void CILI9486DMADisplay::SetTargetClock (unsigned nTargetHz)
 {
 	unsigned nCoreNow = CMachineInfo::Get ()->GetClockRate (CLOCK_ID_CORE);

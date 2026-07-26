@@ -392,21 +392,26 @@ arrived at and is worth reading alongside this.
 
 ```
 circle/                                  submodule, pinned to Step51
-configure-gamepi20.sh                    configures and builds Circle
+configure-gamepi20.sh                    builds Circle RASPPI=1, stashes libs
+configure-mhs35.sh                       builds Circle RASPPI=2, stashes libs
 software/infones/
 ├── InfoNES.cpp, K6502.cpp, mapper/      shared with the pico build, untouched
 ├── InfoNES_System.h                     the porting seam: 13 functions
 ├── main.cpp, CMakeLists.txt             pico platform layer
 ├── linux/InfoNES_System_Linux.cpp       reference port, not built
 └── circle/                              this port
-    ├── Makefile
+    ├── Makefile                         dispatcher: builds per target dir
+    ├── infones.mk                        shared recipe, run in a build dir
     ├── main.cpp, kernel.{cpp,h}
     ├── InfoNES_System_Circle.cpp        the 13 functions, plus NesPalette
-    ├── ST7789DMADisplay.{h,cpp}         panel driver, frames over DMA
+    ├── ST7789DMADisplay.{h,cpp}         GamePi20 panel driver, frames over DMA
+    ├── ILI9486DMADisplay.{h,cpp}        MHS35 panel driver
     ├── DisplayConfig.h, InputConfig.h   pins and panel settings
     ├── GamePi20.h                       bridge: emulator <-> kernel
     ├── pico.h, PicoCompat.h             stand-ins, see below
-    └── stdshim/                         four C++ headers, see below
+    ├── stdshim/                         four C++ headers, see below
+    ├── build-gamepi20/, build-mhs35/    per-target objects + image (gitignored)
+    └── libs/{gamepi20,mhs35}/           per-target Circle .a stash (gitignored)
 ```
 
 CMake never looks at `circle/`, so the two builds coexist. The Circle Makefile
@@ -415,18 +420,47 @@ reaches the shared sources by relative path, so nothing is duplicated and
 
 ### Build
 
+The two panels need different Circle builds (RASPPI 1 vs 2, and different
+sysconfig), but they coexist: each is built in its own directory against its own
+stashed copy of the Circle libraries, so building one never disturbs the other.
+
 ```bash
-./configure-gamepi20.sh          # from the repository root, once
-cd software/infones/circle && make
+# From the repository root, once per panel. Each rebuilds Circle for its chip
+# and copies the resulting .a files into software/infones/circle/libs/<panel>/.
+./configure-gamepi20.sh          # RP Zero, ST7789   -> libs/gamepi20/
+./configure-mhs35.sh             # Pi 2/3, ILI9486   -> libs/mhs35/
+
+cd software/infones/circle
+make                             # -> build-gamepi20/kernel.img
+make MHS35=1                     # -> build-mhs35/kernel7.img
 ```
 
-Circle's Rules.mk compiles in place, so this leaves `.o`/`.d` files next to the
-shared sources. They are gitignored.
+**Once both `libs/` stashes exist, switching panels needs no reconfigure and no
+clean** - just the other `make` line. This works because Circle's *headers* are
+config-independent (the chip difference is `-D` flags and `-mcpu`); only the
+compiled `.a` libraries differ, and those are stashed per panel. The dispatcher
+Makefile passes `RASPPI` on the sub-make command line, which overrides whatever
+the submodule's `Config.mk` currently says, so the app objects are built for the
+right chip regardless of how Circle was last configured. `circle.ld` is tracked
+and config-independent, so both link against the live one.
+
+`infones.mk` runs inside the build directory and finds the sources one and two
+levels up via `VPATH`, flattening the port layer and the shared core into that
+one directory. `make clean` removes the selected target's build dir;
+`make clean-all` removes both.
+
+**Why the configure scripts `makeall clean` first:** a bare `./configure -r N`
+does not invalidate the existing objects - Make cannot see that `RASPPI` or the
+sysconfig flags changed - so an incremental `makeall` silently keeps the
+previous target's objects and you stash the wrong libraries (identical `.a` for
+both panels is the tell). The scripts clean the Circle tree and every linked
+addon before rebuilding.
 
 SD card: `bootcode.bin`, `start.elf`, `fixup.dat` (from `make` in
 `circle/boot`), `config.txt` (copy `boot/config.txt` from this repo, **not**
 `circle/boot/config32.txt` — it is that file plus the pinned core clock),
-`cmdline.txt`, `kernel.img`, and the games in a `nes/` directory.
+`cmdline.txt`, `kernel.img` (from `build-gamepi20/`; the MHS35's `kernel7.img`
+is in `build-mhs35/`), and the games in a `nes/` directory.
 
 `config.txt` also pins the core clock (`core_freq=250`, `core_freq_min=250`,
 above the `[model]` markers) so the SPI rate derived from it stays put. See the
@@ -920,16 +954,17 @@ sharing everything above; only the display driver, the scaling, and the input
 differ. Verified on a Pi 3B: menu, game video and gamepad all working.
 
 ```bash
+./configure-mhs35.sh              # from the repo root, once (RASPPI=2 + stash)
 cd software/infones/circle
-make MHS35=1          # -DPANEL_MHS35, RASPPI=2 -> kernel7.img
+make MHS35=1                       # -DPANEL_MHS35 -> build-mhs35/kernel7.img
 ```
 
-Circle must be configured `RASPPI=2` (`./configure -r 2 -f` in `circle/`, then
-`./makeall` and the addon builds). `RASPPI=2` boots on both Pi 2B and Pi 3B
-(shared peripheral base) and produces `kernel7.img`, which the firmware
-auto-selects. Circle must be configured **without** the Zero-only `*_ON_ZERO`
-PWM audio symbols (which is the default — `configure -r 2 -f` sets none), so
-audio routes to the Pi's real jack; see Sound below. SD card: MBR + FAT32 (a GPT
+`configure-mhs35.sh` builds Circle `RASPPI=2` and stashes its libraries under
+`libs/mhs35/` (see the Build section above for how the two panels coexist).
+`RASPPI=2` boots on both Pi 2B and Pi 3B (shared peripheral base) and produces
+`kernel7.img`, which the firmware auto-selects. It configures Circle **without**
+the Zero-only `*_ON_ZERO` PWM audio symbols, so audio routes to the Pi's real
+jack; see Sound below. SD card: MBR + FAT32 (a GPT
 card leaves a Pi 3B dead at power-on), the Circle boot files, `config.txt`
 (a `config32.txt` with **`core_freq=250` + `core_freq_min=250` added above the
 `[pi4]`/`[cm4]` markers** — the SPI rate is a divisor of the core clock, so

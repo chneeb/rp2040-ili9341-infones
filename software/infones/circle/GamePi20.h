@@ -35,6 +35,11 @@ const char *GamePi20_ChooseRom (void);
 // turns out to be.
 int GamePi20_DisplayBusy (void);
 
+// Should the SPI panel be drawn to at all? 0 when HDMI took over the display at
+// boot (HDMI-only mode). When 0 the caller skips the scale as well as the
+// transfer, so the work is saved, not just hidden.
+int GamePi20_PanelActive (void);
+
 // Block until the next frame is due. Called once per frame, after the picture
 // has been handed over, so the transfer runs during the wait.
 void GamePi20_WaitForNextFrame (void);

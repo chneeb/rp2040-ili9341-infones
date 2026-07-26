@@ -7,6 +7,9 @@
 #include <circle/2dgraphics.h>
 #include <circle/util.h>
 #include <circle/machineinfo.h>
+#if HDMI_OUTPUT
+#include <circle/bcmpropertytags.h>
+#endif
 #include <assert.h>
 
 // The emulator's own header. Kept to this one place, and to
@@ -90,6 +93,24 @@ CKernel::~CKernel (void)
 	s_pThis = 0;
 }
 
+#if HDMI_OUTPUT
+// Is a monitor actually connected? Read EDID block 0 over the VideoCore mailbox:
+// a real display answers with status success, and with nothing plugged in the
+// tag fails or reports a non-success status. This is the honest hotplug test -
+// unlike allocating a framebuffer, which the firmware does regardless. Read once
+// at boot; HDMI here is a connect-before-power-on output, not hotplug.
+static boolean HdmiConnected (void)
+{
+	CBcmPropertyTags Tags;
+	TPropertyTagEDIDBlock EDID;
+	EDID.nBlockNumber = EDID_FIRST_BLOCK;
+
+	return Tags.GetTag (PROPTAG_GET_EDID_BLOCK, &EDID, sizeof EDID,
+			    sizeof EDID.nBlockNumber)
+	       && EDID.nStatus == EDID_STATUS_SUCCESS;
+}
+#endif
+
 boolean CKernel::Initialize (void)
 {
 	// Interrupts first: the display signals the end of a transfer from an
@@ -108,14 +129,33 @@ boolean CKernel::Initialize (void)
 #endif
 
 #if HDMI_OUTPUT
-	// Optional: a second, independent output. Failure here (no monitor) is not
-	// fatal - the SPI panel is the primary display.
-	m_pHDMI = new CBcmFrameBuffer (HDMI_WIDTH, HDMI_HEIGHT, 16);
-	if (m_pHDMI == 0 || !m_pHDMI->Initialize ())
+	// Optional: a second, independent output. Only brought up when a monitor is
+	// actually connected - see HdmiConnected(). CBcmFrameBuffer::Initialize()
+	// cannot be used as the test: the firmware allocates a framebuffer at a
+	// default mode whether or not anything is plugged in, so it succeeds with no
+	// monitor, and keying the panel-off on that darkened the handheld screen.
+	if (HdmiConnected ())
 	{
-		delete m_pHDMI;
-		m_pHDMI = 0;
+		m_pHDMI = new CBcmFrameBuffer (HDMI_WIDTH, HDMI_HEIGHT, 16);
+		if (m_pHDMI == 0 || !m_pHDMI->Initialize ())
+		{
+			delete m_pHDMI;
+			m_pHDMI = 0;
+		}
 	}
+
+#if TFT_OFF_WHEN_HDMI
+	// HDMI present and this board opted to go HDMI-only: stop feeding the SPI
+	// panel (below, via m_bPanelActive) and switch its backlight off so it goes
+	// genuinely dark rather than sitting lit on a frozen frame. Decided once
+	// here - HDMI is a boot-time output - so there is no per-frame check beyond
+	// the flag.
+	if (m_pHDMI != 0)
+	{
+		m_bPanelActive = FALSE;
+		m_Display.SetBacklight (FALSE);
+	}
+#endif
 #endif
 
 	return TRUE;
@@ -939,6 +979,14 @@ int GamePi20_DisplayBusy (void)
 	assert (pKernel != 0);
 
 	return pKernel->DisplayBusy () ? 1 : 0;
+}
+
+int GamePi20_PanelActive (void)
+{
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->PanelActive () ? 1 : 0;
 }
 
 void GamePi20_SetFramePeriod (unsigned nMicros)

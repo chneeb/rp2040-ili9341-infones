@@ -4,3 +4,9 @@
 *.lst
 *.img
 *.map
+
+# Per-target build directories (objects + kernel image) and the per-target
+# Circle library stashes populated by the configure scripts.
+/build-gamepi20/
+/build-mhs35/
+/libs/

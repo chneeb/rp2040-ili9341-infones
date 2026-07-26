@@ -336,6 +336,14 @@ void CST7789DMADisplay::WaitForTransfer (void)
 	}
 }
 
+void CST7789DMADisplay::SetBacklight (boolean bOn)
+{
+	if (m_nBackLightPin != None)
+	{
+		m_BackLightPin.Write (bOn ? HIGH : LOW);
+	}
+}
+
 void CST7789DMADisplay::StartNextChunk (void)
 {
 	unsigned nRemaining = m_nBytesTotal - m_nBytesSent;

@@ -139,28 +139,33 @@ static void FlushSRAMPeriodically (void);
 int InfoNES_LoadFrame (void)
 {
 #if !SKIP_DISPLAY
-	// Drop this frame if the previous one is still going out, rather than wait
-	// for the bus. Waiting would stall the emulator and cost the game its
-	// speed and its audio pitch; dropping only costs smoothness.
-	//
-	// This adapts on its own to whatever the bus is actually running at, which
-	// matters because the core clock moves about and Circle fixes the SPI
-	// divisor once at init. A full width frame is 12.3 ms at 100 MHz and goes
-	// out every time; the same frame is 19.7 ms at 62.5 and lands every other
-	// frame. Either way the game runs at the right speed.
-	//
-	// DISPLAY_FRAME_SKIP still applies on top, for forcing a lower rate.
-	static unsigned nFrame = 0;
-	if (++nFrame >= DISPLAY_FRAME_SKIP && !GamePi20_DisplayBusy ())
+	// Skipped entirely in HDMI-only mode: no scale, no transfer, no backlight -
+	// the SPI panel is off and HDMI below is the only output.
+	if (GamePi20_PanelActive ())
 	{
-		nFrame = 0;
+		// Drop this frame if the previous one is still going out, rather than
+		// wait for the bus. Waiting would stall the emulator and cost the game
+		// its speed and its audio pitch; dropping only costs smoothness.
+		//
+		// This adapts on its own to whatever the bus is actually running at,
+		// which matters because the core clock moves about and Circle fixes the
+		// SPI divisor once at init. A full width frame is 12.3 ms at 100 MHz and
+		// goes out every time; the same frame is 19.7 ms at 62.5 and lands every
+		// other frame. Either way the game runs at the right speed.
+		//
+		// DISPLAY_FRAME_SKIP still applies on top, for forcing a lower rate.
+		static unsigned nFrame = 0;
+		if (++nFrame >= DISPLAY_FRAME_SKIP && !GamePi20_DisplayBusy ())
+		{
+			nFrame = 0;
 
 #if NES_FILL_WIDTH
-		ScaleFrame ();
-		GamePi20_PresentFrame (s_Scaled);
+			ScaleFrame ();
+			GamePi20_PresentFrame (s_Scaled);
 #else
-		GamePi20_PresentFrame (s_Frame);
+			GamePi20_PresentFrame (s_Frame);
 #endif
+		}
 	}
 #endif
 

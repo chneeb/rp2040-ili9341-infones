@@ -82,6 +82,12 @@ typedef CST7789DMADisplay CPanelDisplay;
 #define HDMI_WIDTH		640
 #define HDMI_HEIGHT		480
 
+// Keep the SPI panel running even when HDMI is connected. The MHS35's backlight
+// is hardwired on, so a panel that stopped being fed would sit lit showing
+// stale GRAM (which reads as white) - worse than just mirroring the picture.
+// The Pi 3B has spare cores, so the extra scale + transfer is close to free.
+#define TFT_OFF_WHEN_HDMI	0
+
 #else	// ==== Waveshare GamePi20 / ST7789, 320x240 ===========================
 
 // Simultaneous HDMI output on the Pi Zero. Experimental here: the Zero is a
@@ -92,6 +98,13 @@ typedef CST7789DMADisplay CPanelDisplay;
 #define HDMI_OUTPUT		1
 #define HDMI_WIDTH		640
 #define HDMI_HEIGHT		480
+
+// When HDMI is connected at boot, go HDMI-only: stop feeding the SPI panel and
+// switch its backlight off. The GamePi20's backlight is a real GPIO, so the
+// panel goes genuinely dark (saving power), and skipping the 256->320 scale
+// frees ~0.5-1 ms/frame on the single-core Zero. Handheld (no HDMI) is
+// unchanged. Contrast the MHS35, whose backlight cannot be switched.
+#define TFT_OFF_WHEN_HDMI	1
 
 // Diagnostic: run the emulator and its sound, but never send a frame to the
 // panel. If a background noise in the audio disappears with this set, the

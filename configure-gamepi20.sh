@@ -1,6 +1,10 @@
 #!/bin/sh
 #
-# Configure and build Circle for the Waveshare GamePi20.
+# Configure and build Circle for the Waveshare GamePi20 (RP Zero, ST7789), then
+# stash its libraries under software/infones/circle/libs/gamepi20/ so the app can
+# link them without depending on the submodule's current configuration. That is
+# what lets the GamePi20 and MHS35 builds coexist - see configure-mhs35.sh and
+# software/infones/circle/Makefile.
 #
 # The three PWM audio options below have to be passed to Circle's configure,
 # because they live in circle/include/circle/sysconfig.h, inside the submodule.
@@ -16,7 +20,10 @@
 #
 set -e
 
-cd "$(dirname "$0")/circle"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+STASH="$ROOT/software/infones/circle/libs/gamepi20"
+
+cd "$ROOT/circle"
 
 ./configure -r 1 -f \
 	-d USE_PWM_AUDIO_ON_ZERO \
@@ -26,12 +33,27 @@ cd "$(dirname "$0")/circle"
 
 echo
 echo "Building Circle ..."
+# A reconfigure does not invalidate the existing objects - Make cannot see that
+# RASPPI or the sysconfig flags changed - so an incremental build would silently
+# keep the previous target's objects. Clean first, always.
+./makeall clean
 ./makeall -j"$(nproc)"
 
 for addon in SDCard fatfs display; do
 	echo "Building addon/$addon ..."
+	make -C "addon/$addon" clean
 	make -C "addon/$addon" -j"$(nproc)"
 done
 
 echo
-echo "Circle is built. Now run 'make' in the project root to build kernel.img."
+echo "Stashing libraries -> $STASH"
+mkdir -p "$STASH"
+for lib in lib/libcircle.a lib/sound/libsound.a lib/usb/libusb.a \
+	   lib/usb/gadget/libusbgadget.a lib/input/libinput.a lib/fs/libfs.a \
+	   addon/fatfs/libfatfs.a addon/SDCard/libsdcard.a; do
+	cp "$lib" "$STASH/"
+done
+
+echo
+echo "Circle (GamePi20) is built and stashed."
+echo "Now run 'make' in software/infones/circle to build build-gamepi20/kernel.img."

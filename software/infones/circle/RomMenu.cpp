@@ -132,7 +132,12 @@ unsigned CRomMenu::Scan (const char *pDirectory)
 
 void CRomMenu::PushDisplay (void)
 {
-	m_Graphics.UpdateDisplay ();
+	// The panel copy is skipped in HDMI-only mode; the C2DGraphics buffer is
+	// still drawn in memory, so the HDMI mirror below shows the menu regardless.
+	if (GamePi20_PanelActive ())
+	{
+		m_Graphics.UpdateDisplay ();
+	}
 
 	// Mirror the same off-screen buffer to HDMI (no-op if not built / no
 	// monitor). The buffer is the panel's RGB565 big-endian format, the same as
