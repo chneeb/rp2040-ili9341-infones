@@ -52,6 +52,13 @@ void GamePi20_SetFramePeriod (unsigned nMicros);
 // which is what the APU produces. Returns 0 on success.
 int GamePi20_SoundOpen (int nSampleRate);
 
+// Is HDMI the active display (a monitor was connected at boot)? When true the
+// platform layer routes audio to HDMI instead of the PWM jack.
+int GamePi20_HdmiActive (void);
+
+// Start HDMI audio at nSampleRate (44100 for NTSC). Returns 0 on success.
+int GamePi20_SoundOpenHDMI (int nSampleRate);
+
 void GamePi20_SoundClose (void);
 
 // Queue mono 8 bit samples. Returns how many were taken; anything not taken is

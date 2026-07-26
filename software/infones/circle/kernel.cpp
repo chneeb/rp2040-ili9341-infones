@@ -649,10 +649,66 @@ int CKernel::SoundOpen (int nSampleRate)
 
 	// Only once it is actually running, so a failed open cannot leave a rate
 	// recorded that no device is using.
+	m_bHDMIAudio = FALSE;
 	m_nSoundRate = nSampleRate;
 
 	return 0;
 }
+
+#if HDMI_OUTPUT
+// The docked audio path: the PWM jack is replaced by the HDMI sound device,
+// which the VideoCore scans out on the same cable as the picture. It needs a
+// standard rate - 22050 is not one - so it runs at 44100 and SoundWrite feeds
+// each 22050 NES sample twice (an exact 2:1, so the pitch is right and there is
+// no resampler). Only NTSC is routed here; a PAL game stays silent when docked.
+int CKernel::SoundOpenHDMI (int nSampleRate)
+{
+#if !SOUND_ENABLED
+	return -1;
+#else
+	if (m_pSound != 0)
+	{
+		if (m_bHDMIAudio && (int) m_nSoundRate == nSampleRate)
+		{
+			return 0;
+		}
+
+		SoundClose ();
+	}
+
+	m_pSound = new CHDMISoundBaseDevice (&m_Interrupt, nSampleRate);
+	if (m_pSound == 0)
+	{
+		return -1;
+	}
+
+	if (!m_pSound->AllocateQueue (SOUND_QUEUE_MSECS))
+	{
+		delete m_pSound;
+		m_pSound = 0;
+
+		return -1;
+	}
+
+	// HDMI carries stereo; the NES sample is duplicated to both sides in
+	// SoundWrite, as the MHS35 jack does.
+	m_pSound->SetWriteFormat (SoundFormatUnsigned8, 2);
+
+	if (!m_pSound->Start ())
+	{
+		delete m_pSound;
+		m_pSound = 0;
+
+		return -1;
+	}
+
+	m_bHDMIAudio = TRUE;
+	m_nSoundRate = nSampleRate;
+
+	return 0;
+#endif
+}
+#endif
 
 // Cancel() only *requests* the stop - the header says it "takes effect after a
 // short delay" - and ~CPWMSoundBaseDevice does not wait for it. Deleting
@@ -684,6 +740,7 @@ void CKernel::SoundClose (void)
 	delete m_pSound;
 	m_pSound = 0;
 	m_nSoundRate = 0;
+	m_bHDMIAudio = FALSE;
 }
 
 // Whatever does not fit is dropped. Waiting for room would stall the frame the
@@ -695,6 +752,36 @@ int CKernel::SoundWrite (const unsigned char *pSamples, int nCount)
 	{
 		return nCount;
 	}
+
+#if HDMI_OUTPUT
+	if (m_bHDMIAudio)
+	{
+		// NES mono at 22050 -> HDMI stereo at 44100. Each sample becomes two
+		// stereo frames: doubled in time for the 2x rate, and duplicated across
+		// L/R because HDMI carries stereo. So one NES sample is four bytes out.
+		static unsigned char Buf[4 * 512];
+		int nDone = 0;
+		while (nDone < nCount)
+		{
+			int nChunk = nCount - nDone;
+			if (nChunk > 512)
+			{
+				nChunk = 512;
+			}
+			for (int i = 0; i < nChunk; i++)
+			{
+				unsigned char s = pSamples[nDone + i];
+				Buf[4 * i]     = s;	// frame 1, left
+				Buf[4 * i + 1] = s;	// frame 1, right
+				Buf[4 * i + 2] = s;	// frame 2, left
+				Buf[4 * i + 3] = s;	// frame 2, right
+			}
+			m_pSound->Write (Buf, nChunk * 4);
+			nDone += nChunk;
+		}
+		return nCount;
+	}
+#endif
 
 #ifdef PANEL_MHS35
 	// Mono -> stereo: duplicate each 8-bit sample into an interleaved L/R pair
@@ -738,7 +825,20 @@ int CKernel::SoundBufferAvail (void)
 		return 0;
 	}
 
-	return m_pSound->GetQueueSizeFrames () - m_pSound->GetQueueFramesAvail ();
+	int nFramesRoom =   (int) m_pSound->GetQueueSizeFrames ()
+			  - (int) m_pSound->GetQueueFramesAvail ();
+
+#if HDMI_OUTPUT
+	// Each NES sample becomes two HDMI frames, so the room the APU may fill is
+	// half the frames free. Without this the APU generates twice what fits and
+	// the extra is dropped - audible as a buzz.
+	if (m_bHDMIAudio)
+	{
+		return nFramesRoom / 2;
+	}
+#endif
+
+	return nFramesRoom;
 }
 
 // Up is read once, straight after the pull-ups are enabled. Nothing is written
@@ -1011,6 +1111,31 @@ int GamePi20_SoundOpen (int nSampleRate)
 	assert (pKernel != 0);
 
 	return pKernel->SoundOpen (nSampleRate);
+}
+
+int GamePi20_HdmiActive (void)
+{
+#if HDMI_OUTPUT
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->HdmiActive () ? 1 : 0;
+#else
+	return 0;
+#endif
+}
+
+int GamePi20_SoundOpenHDMI (int nSampleRate)
+{
+#if HDMI_OUTPUT
+	CKernel *pKernel = CKernel::Get ();
+	assert (pKernel != 0);
+
+	return pKernel->SoundOpenHDMI (nSampleRate);
+#else
+	(void) nSampleRate;
+	return -1;
+#endif
 }
 
 void GamePi20_SoundClose (void)

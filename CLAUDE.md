@@ -658,6 +658,9 @@ perceive for a volume control and would be wrong for anything twitchy.
 
 ### Sound
 
+This section is the PWM jack path, used undocked. When docked (HDMI connected at
+boot) audio routes to HDMI instead - see [HDMI audio](#hdmi-audio-docked-ntsc).
+
 PWM on GPIO 18, mono, 22050 Hz (`pAPU_QUALITY` is 2 in `InfoNES_pAPU.h`). The
 APU produces 8 bit unsigned, which Circle takes directly as
 `SoundFormatUnsigned8`, so nothing is converted. The five channels - two pulse,
@@ -1065,9 +1068,11 @@ emulator.
 
 The emulator drives **HDMI at 640x480 at the same time as the SPI panel** -
 handheld panel plus a docked-TV view - on both the MHS35/Pi 3B and the
-GamePi20/Pi Zero. Verified on hardware. Video only so far; HDMI audio is still
-open (see Not done yet). Gated by `HDMI_OUTPUT` in DisplayConfig.h (1 for both
-panels now).
+GamePi20/Pi Zero. Verified on hardware. Gated by `HDMI_OUTPUT` in
+DisplayConfig.h (1 for both panels now). Docked play (a monitor connected at
+boot) also switches the GamePi20's panel off and routes NTSC audio over HDMI -
+see [Docked mode](#docked-mode-hdmi-only) and
+[HDMI audio](#hdmi-audio-docked-ntsc) below.
 
 **Independent hardware, no contention.** HDMI is the VideoCore's framebuffer
 (`CBcmFrameBuffer`), scanned out by the GPU on its own; the SPI panel is
@@ -1087,10 +1092,16 @@ its bandwidth-limited rate, both from the one emulation.
   `UpdateDisplay()` then mirrors the C2DGraphics off-screen buffer
   (`GetBuffer()`, panel size) to HDMI. All three menu update points call it, so
   every menu state shows on both.
-- **Graceful:** `CBcmFrameBuffer::Initialize()` fails if no monitor is present
-  at boot (EDID); then `m_pHDMI` is 0 and every HDMI call is a no-op - the panel
-  is unaffected. So HDMI is a "connect before power-on" (boot-time) output, not
-  hotplug.
+- **Detection is by EDID, not by framebuffer init.** `HdmiConnected()` reads
+  EDID block 0 over the VideoCore mailbox (`PROPTAG_GET_EDID_BLOCK`); only a
+  real display answers `EDID_STATUS_SUCCESS`. **`CBcmFrameBuffer::Initialize()`
+  must NOT be used as the test** - the firmware allocates a framebuffer at a
+  default mode whether or not anything is plugged in, so it succeeds with no
+  monitor, and keying the panel-off on that darkened the handheld screen. The
+  framebuffer is created only when EDID says a monitor is there; otherwise
+  `m_pHDMI` is 0 and every HDMI call is a no-op. Read once at boot, so this is a
+  "connect before power-on" output, not hotplug. (`config.txt` here has no
+  `hdmi_force_hotplug`, so the probe is honest.)
 
 **Notes / caveats:**
 - Colours are byte-swapped as above; if HDMI colour ever looks wrong the swap or
@@ -1100,30 +1111,65 @@ its bandwidth-limited rate, both from the one emulation.
 - 640x480 fill is correct 4:3 by the CRT convention; the aspect note below still
   applies to the *panel*, not HDMI (HDMI has the bandwidth to be correct).
 - **Pi Zero is single-core** (ARM11) with no offload, yet runs the game at speed
-  with HDMI + panel at 640x480 - confirmed. Its backlight is GPIO so it *could*
-  be switched off when docked (see Not done yet); the MHS35's is hardwired on.
+  with HDMI + panel at 640x480 - confirmed. When docked it does not even pay the
+  panel cost: its backlight is GPIO, so the GamePi20 switches the panel off (see
+  Docked mode). The MHS35's backlight is hardwired on, so it keeps both.
+
+### Docked mode (HDMI-only)
+
+When a monitor is connected at boot, the port treats the device as *docked* and
+runs one display at a time rather than two - the panel is redundant with a TV in
+front of you. This is per board, via `TFT_OFF_WHEN_HDMI` in DisplayConfig.h:
+
+- **GamePi20: 1.** The panel stops being fed and its backlight (a real GPIO) is
+  switched off, so it goes genuinely dark. `GamePi20_PanelActive()` returns
+  false; the game (`InfoNES_LoadFrame`) and the menu (`CRomMenu::PushDisplay`)
+  skip **both** the 256->320 scale and the SPI transfer, saving the work rather
+  than hiding it - ~0.5-1 ms/frame back on the single-core Zero.
+- **MHS35: 0.** Its backlight is hardwired on, so a panel that stopped being fed
+  would sit lit showing stale GRAM (reads as white). It keeps mirroring to both,
+  which the Pi 3B's spare cores make nearly free.
+
+The switch is decided once at boot from `HdmiConnected()` (EDID), so it is
+dock-and-boot, not hotplug. Undocked, `m_bPanelActive` stays true and the
+handheld path is byte-for-byte as before.
+
+### HDMI audio (docked, NTSC)
+
+Docked audio goes out over HDMI instead of the PWM jack, on both boards.
+`CHDMISoundBaseDevice` is a `CSoundBaseDevice`, so it takes the same queue API
+(`AllocateQueue`/`SetWriteFormat`/`Write`) the PWM path uses; `m_pSound` is a
+base-class pointer that holds whichever device is open. The routing decision is
+in `InfoNES_SoundOpen` (which already knows the region) via
+`GamePi20_HdmiActive()`:
+
+- **NTSC:** open the HDMI device at **44100** and write each 22050 NES sample
+  **twice**. NES NTSC audio is 22050 and 44100 is exactly 2x, so this is an
+  exact 2:1 upsample - correct pitch, **no resampler and no core change**. The
+  doubling is in `SoundWrite` (two stereo frames per sample, mono duplicated to
+  L/R since HDMI is stereo), and `SoundBufferAvail` returns **half** the free
+  frames so the APU does not over-generate and buzz.
+- **PAL:** silent when docked - see below. Its rate has no clean integer path to
+  a legal HDMI rate, so the device is closed and `APU_Mute` set.
+
+Switching NTSC<->PAL while docked reopens/closes the device through the existing
+bounded `SoundClose` (which waits out `IsActive()` so the DMA is not torn down
+mid-transfer). Undocked, none of this runs and the PWM path is unchanged.
+
+**MHS35 note:** docked audio moves to HDMI even though the MHS35 keeps its panel
+*and* its analog jack - a monitor with no speakers means silence there. Making
+HDMI-audio GamePi20-only, or feeding both jack and HDMI, is a small change if it
+ever matters.
 
 ### Not done yet
 
-- **HDMI audio.** The video half is done (above); audio still only goes to the
-  PWM jack. Circle has `CHDMISoundBaseDevice` (same `CSoundBaseDevice` queue API
-  as the PWM device) and a firmware-routed `CVCHIQSoundBaseDevice` (vc4 addon)
-  fallback. The wrinkles: HDMI needs a **standard sample rate** (44.1/48 kHz),
-  not the APU's 22050 - run the APU at 44100 (`pAPU_QUALITY 3`); and **the PAL
-  pitch trick breaks over HDMI** (PAL opens the device at 18347 Hz, not a legal
-  HDMI rate), so PAL-over-HDMI needs real resampling. Either switch to HDMI
-  audio when docked, or feed both jack + HDMI. Verify `CHDMISoundBaseDevice`'s
-  rates and whether it needs the framebuffer up first.
-
-- **Turn the TFT off when HDMI is connected** (parked). When docked, the
-  handheld panel is redundant. Gating the SPI present + (GamePi20) the backlight
-  pin on `m_pHDMI != 0` would save power (real on the GamePi20 - its backlight
-  is GPIO; the MHS35's is hardwired on) and a little CPU (skipping the panel's
-  256->320 scale, ~20% of the scaling work, ~0.5-1 ms/frame) - headroom you
-  could reinvest in a higher HDMI resolution, most useful on the single-core
-  Zero. Small change (a runtime check + a config toggle so "both screens" stays
-  possible). Caveat: HDMI is detected at boot, so this is dock-and-boot, not
-  hotplug.
+- **PAL audio over HDMI.** NTSC works (above); PAL is silent when docked. The
+  problem is that the APU generates 5/6 as many samples a second at 50 Hz pacing
+  (~18375/s), which the PWM jack absorbs by opening slow (18347 Hz) - but HDMI
+  is locked to a standard rate, so the slow-clock trick is unavailable. It needs
+  a real resampler from the APU's PAL output rate to 44100 (which also corrects
+  the pitch, in software, the way the slow clock does in hardware). See the
+  detailed note when picking this up next.
 
 - **MHS35 aspect ratio.** Currently fills 480x320. This is really an *NTSC*
   problem, because NTSC and PAL differ in pixel aspect:

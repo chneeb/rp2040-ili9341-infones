@@ -28,6 +28,7 @@ class CRomMenu;
 #include "DisplayConfig.h"
 #if HDMI_OUTPUT
 #include <circle/bcmframebuffer.h>
+#include <circle/sound/hdmisoundbasedevice.h>
 #endif
 #include "InputConfig.h"
 
@@ -60,6 +61,11 @@ public:
 	// boot and the board opted to go dark then (TFT_OFF_WHEN_HDMI). The game and
 	// menu skip both the scale and the transfer when this is false.
 	boolean PanelActive (void) const	{ return m_bPanelActive; }
+#if HDMI_OUTPUT
+	// True when a monitor was found at boot, i.e. the device is docked. Drives
+	// the audio routing (HDMI vs the PWM jack).
+	boolean HdmiActive (void) const		{ return m_pHDMI != 0; }
+#endif
 	unsigned ReadPad (void);
 	void WaitForNextFrame (void);
 
@@ -77,6 +83,11 @@ public:
 	// rather than the menu's own loop, which is paced by the same code.
 	unsigned GetMeasuredFPS (void) const	{ return m_nLastGameFPS; }
 	int SoundOpen (int nSampleRate);
+#if HDMI_OUTPUT
+	// Open the HDMI sound device instead of the PWM one, for docked play. Used
+	// only for NTSC, whose 22050 doubles exactly to HDMI's 44100.
+	int SoundOpenHDMI (int nSampleRate);
+#endif
 	void SoundClose (void);
 	int SoundWrite (const unsigned char *pSamples, int nCount);
 	int SoundBufferAvail (void);
@@ -162,8 +173,14 @@ private:
 	unsigned m_nMeasuredFPS = 0;
 	unsigned m_nLastGameFPS = 0;
 
-	// Created once the emulator says what rate it wants.
-	CPWMSoundBaseDevice *m_pSound = 0;
+	// Created once the emulator says what rate it wants. A base-class pointer so
+	// it can be either the PWM device (handheld) or the HDMI device (docked).
+	CSoundBaseDevice *m_pSound = 0;
+
+	// True when m_pSound is the HDMI device: it runs at 44100 and takes each
+	// 22050 NES sample twice (2:1) as a stereo pair. Changes the SoundWrite
+	// duplication and the buffer-room accounting.
+	boolean m_bHDMIAudio = FALSE;
 
 	// Lives for the whole session: InfoNES_Main() comes back to the menu
 	// every time a game is quit.
