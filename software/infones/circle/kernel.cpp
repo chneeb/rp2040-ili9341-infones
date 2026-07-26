@@ -76,14 +76,14 @@ CKernel::CKernel (void)
 		   CPanelDisplay::TargetClock (), ST7789_CPOL, ST7789_CPHA,
 		   ST7789_MADCTL, ST7789_SWAP_COLOR_BYTES),
 	m_EMMC (&m_Interrupt, &m_Timer, &m_ActLED)
-#ifdef PANEL_MHS35
+#if USB_GAMEPAD
 	, m_USBHCI (&m_Interrupt, &m_Timer, TRUE)	// TRUE: plug-and-play
 #endif
 {
 	s_pThis = this;
 	m_ActLED.Blink (5);
 
-#ifdef PANEL_MHS35
+#if USB_GAMEPAD
 	memset (&m_GamePadState, 0, sizeof m_GamePadState);
 #endif
 }
@@ -123,9 +123,24 @@ boolean CKernel::Initialize (void)
 	if (!m_EMMC.Initialize ())	return FALSE;
 
 #ifdef PANEL_MHS35
+	// The MHS35's only input is the USB gamepad, so a failed host is fatal.
 	if (!m_USBHCI.Initialize ())	return FALSE;
+	m_bUSBHostActive = TRUE;
 #else
 	InitializeButtons ();
+
+	// The Zero's single USB port is a host (a gamepad) or a device (the mass-
+	// storage gadget), never both. Decide once, here: if Up is held we are bound
+	// for gadget mode (see Run), so leave USB untouched for the gadget; otherwise
+	// bring the host up so a gamepad can be used alongside the GPIO buttons. A
+	// failed host is not fatal here - the buttons still work.
+	m_bUSBGadgetBoot = UpHeldAtBoot ();
+#if USB_GAMEPAD
+	if (!m_bUSBGadgetBoot)
+	{
+		m_bUSBHostActive = m_USBHCI.Initialize ();
+	}
+#endif
 #endif
 
 #if HDMI_OUTPUT
@@ -178,59 +193,26 @@ void CKernel::InitializeButtons (void)
 	m_VolumeUpPin.SetMode (GPIOModeInputPullUp);
 }
 
-#ifdef PANEL_MHS35
+#if USB_GAMEPAD
 
-// USB gamepad -> NES pad bits. The face buttons map straight across; X and Y
-// double for B and A as they do on the GamePi20. The d-pad comes through
-// whichever way the pad reports it (buttons, hat or axes), because
-// NormalizeGamePadState has already folded hat and axes into the button bits.
-unsigned CKernel::ReadPad (void)
-{
-	PollGamePad ();
-
-	if (m_pGamePad == 0)
-	{
-		return 0;
-	}
-
-	u32 b = m_GamePadState.buttons;
-	unsigned nPad = 0;
-
-	// This pad is a "SimpleGamePad" (confirmed against circle-arcade, same
-	// pad). Its buttons do NOT land on Circle's semantic GamePadButtonA/B/
-	// Start/Select bits - Circle's GamePadButtonA is 0x200, which is actually
-	// this pad's Start. The bit layout below was read straight off the
-	// hardware with a menu readout:
-	//
-	//   X 0x01   A 0x02   B 0x04   Y 0x08   L 0x10   R 0x20
-	//   Select 0x100   Start 0x200
-	//
-	// A -> jump, B -> run, as NES games expect. X/Y/L/R are left free for a
-	// later use (turbo, save states). The d-pad is read by name because
-	// NormalizeGamePadState folds the hat and analog axes into
-	// GamePadButtonUp/Down/Left/Right.
-	#define SIMPLE_PAD_A		0x0002
-	#define SIMPLE_PAD_B		0x0004
-	#define SIMPLE_PAD_L		0x0010
-	#define SIMPLE_PAD_R		0x0020
-	#define SIMPLE_PAD_SELECT	0x0100
-	#define SIMPLE_PAD_START	0x0200
-
-	if (b & SIMPLE_PAD_A)      nPad |= NES_PAD_A;
-	if (b & SIMPLE_PAD_B)      nPad |= NES_PAD_B;
-	if (b & SIMPLE_PAD_SELECT) nPad |= NES_PAD_SELECT;
-	if (b & SIMPLE_PAD_START)  nPad |= NES_PAD_START;
-	if (b & GamePadButtonUp)    nPad |= NES_PAD_UP;
-	if (b & GamePadButtonDown)  nPad |= NES_PAD_DOWN;
-	if (b & GamePadButtonLeft)  nPad |= NES_PAD_LEFT;
-	if (b & GamePadButtonRight) nPad |= NES_PAD_RIGHT;
-
-	// L/R shoulders work the volume, like the GamePi20's TL/TR: L down, R up,
-	// both together mute/unmute. Not part of the NES pad.
-	UpdateVolume ((b & SIMPLE_PAD_L) != 0, (b & SIMPLE_PAD_R) != 0);
-
-	return nPad;
-}
+// This pad is a "SimpleGamePad" (confirmed against circle-arcade, same pad). Its
+// buttons do NOT land on Circle's semantic GamePadButtonA/B/Start/Select bits -
+// Circle's GamePadButtonA is 0x200, which is actually this pad's Start. The bit
+// layout below was read straight off the hardware with a menu readout:
+//
+//   X 0x01   A 0x02   B 0x04   Y 0x08   L 0x10   R 0x20
+//   Select 0x100   Start 0x200
+//
+// A -> jump, B -> run, as NES games expect. A *different* pad may report other
+// bits - bring one up with a menu readout as this pad was. The d-pad is read by
+// name because NormalizeGamePadState folds the hat and analog axes into
+// GamePadButtonUp/Down/Left/Right.
+#define SIMPLE_PAD_A		0x0002
+#define SIMPLE_PAD_B		0x0004
+#define SIMPLE_PAD_L		0x0010
+#define SIMPLE_PAD_R		0x0020
+#define SIMPLE_PAD_SELECT	0x0100
+#define SIMPLE_PAD_START	0x0200
 
 // Find and attach the pad, and keep it hot-pluggable. Called once a frame
 // (InfoNES_PadState runs in vblank), so UpdatePlugAndPlay is cheap here.
@@ -241,6 +223,14 @@ unsigned CKernel::ReadPad (void)
 // each frame; on re-plug it re-registers the handlers.
 void CKernel::PollGamePad (void)
 {
+	// The USB host is down in gadget mode (the port is a device, and m_USBHCI
+	// was never initialised), so there is nothing to poll and touching it would
+	// be wrong.
+	if (!m_bUSBHostActive)
+	{
+		return;
+	}
+
 	m_USBHCI.UpdatePlugAndPlay ();
 
 	if (m_pGamePad != 0)
@@ -362,17 +352,22 @@ unsigned CKernel::AxisToButtons (const TGamePadState *pState, unsigned nAxis,
 	return 0;
 }
 
-#else	// GamePi20 GPIO buttons
+#endif	// USB_GAMEPAD
 
-// The buttons pull their pin to ground, so LOW means pressed.
-//
-// The shoulder buttons are handled here too, on the press rather than while
-// held: this runs once a frame, so a held button would otherwise run the
-// volume from one end to the other in well under a second.
+// Read the pad, merging whatever inputs the board has: the GamePi20's own GPIO
+// buttons and/or an attached USB gamepad. The MHS35 has no GPIO buttons, so it
+// is the gamepad alone. Either source can drive the pad and the volume, so they
+// are OR'd together. The buttons pull their pin to ground, so LOW is pressed;
+// the gamepad d-pad comes through by name because NormalizeGamePadState folds
+// hat and axes into the button bits.
 unsigned CKernel::ReadPad (void)
 {
 	unsigned nPad = 0;
+	boolean bVolDown = FALSE;
+	boolean bVolUp = FALSE;
 
+#ifndef PANEL_MHS35
+	// The board's own buttons.
 	for (unsigned i = 0; i < GPIOButtonCount; i++)
 	{
 		if (m_ButtonPins[i].Read () == LOW)
@@ -381,12 +376,39 @@ unsigned CKernel::ReadPad (void)
 		}
 	}
 
-	UpdateVolume (m_VolumeDownPin.Read () == LOW, m_VolumeUpPin.Read () == LOW);
+	// The shoulders work the volume rather than the pad - TL down, TR up.
+	if (m_VolumeDownPin.Read () == LOW)	bVolDown = TRUE;
+	if (m_VolumeUpPin.Read () == LOW)	bVolUp   = TRUE;
+#endif
+
+#if USB_GAMEPAD
+	// A USB gamepad, if one is attached (host mode only - a no-op otherwise).
+	PollGamePad ();
+	if (m_pGamePad != 0)
+	{
+		u32 b = m_GamePadState.buttons;
+
+		if (b & SIMPLE_PAD_A)      nPad |= NES_PAD_A;
+		if (b & SIMPLE_PAD_B)      nPad |= NES_PAD_B;
+		if (b & SIMPLE_PAD_SELECT) nPad |= NES_PAD_SELECT;
+		if (b & SIMPLE_PAD_START)  nPad |= NES_PAD_START;
+		if (b & GamePadButtonUp)    nPad |= NES_PAD_UP;
+		if (b & GamePadButtonDown)  nPad |= NES_PAD_DOWN;
+		if (b & GamePadButtonLeft)  nPad |= NES_PAD_LEFT;
+		if (b & GamePadButtonRight) nPad |= NES_PAD_RIGHT;
+
+		// L/R shoulders work the volume too, like the GPIO TL/TR.
+		if (b & SIMPLE_PAD_L)	bVolDown = TRUE;
+		if (b & SIMPLE_PAD_R)	bVolUp   = TRUE;
+	}
+#endif
+
+	// Once a frame with the combined shoulder state. The volume machine acts on
+	// release, so it must be called every frame, not only when something is down.
+	UpdateVolume (bVolDown, bVolUp);
 
 	return nPad;
 }
-
-#endif	// PANEL_MHS35
 
 // TL turns the volume down, TR up, both together mute and unmute.
 //
@@ -995,10 +1017,11 @@ TShutdownMode CKernel::RunUSBGadget (void)
 TShutdownMode CKernel::Run (void)
 {
 #ifndef PANEL_MHS35
-	// USB mass-storage transfer mode. Not on the MHS35/Pi 3B: its USB is
-	// host-only (behind the LAN9514 hub), so it cannot be a gadget at all, and
-	// the Up pin is not a button there - it is the gamepad's now.
-	if (UpHeldAtBoot ())
+	// USB mass-storage transfer mode, decided at boot (m_bUSBGadgetBoot, latched
+	// in Initialize before the USB host was brought up, so host and gadget never
+	// contend for the one OTG port). Not on the MHS35/Pi 3B: its USB is host-only
+	// (behind the LAN9514 hub), so it cannot be a gadget at all.
+	if (m_bUSBGadgetBoot)
 	{
 		return RunUSBGadget ();
 	}

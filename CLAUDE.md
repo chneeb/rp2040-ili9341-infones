@@ -656,6 +656,32 @@ Waiting for the release lets the chord be recognised first and the step
 suppressed. The cost is that the change lands on the release, which nobody can
 perceive for a volume control and would be wrong for anything twitchy.
 
+#### USB gamepad (optional, alongside the GPIO buttons)
+
+A USB gamepad works **in addition to** the GPIO buttons on the GamePi20, gated by
+`USB_GAMEPAD` in `InputConfig.h` (default on; set 0 to leave the USB host stack
+out entirely). `ReadPad()` is one function that ORs the two sources - GPIO
+buttons and pad - and merges their L/R volume signals, so either can drive the
+game. Hot-plug works (`UpdatePlugAndPlay` every frame, as on the MHS35). The pad
+decode is the same "SimpleGamePad" bit layout the MHS35 uses (see
+[the MHS35 input section](#the-mhs35--pi-3b-variant)); a *different* pad model
+may need its bits read off with a menu readout.
+
+**The one constraint is the Zero's single USB OTG port: host (a pad) or device
+(the mass-storage gadget), never both.** It is resolved by latching the choice
+once at boot. `Initialize()` sets `m_bUSBGadgetBoot = UpHeldAtBoot()` and only
+brings the USB host up (`m_bUSBHostActive`) when Up is *not* held; `Run()` uses
+that latch to enter [USB transfer mode](#usb-transfer-mode) or the emulator.
+`PollGamePad()` no-ops unless `m_bUSBHostActive`, so gadget mode - which calls
+`ReadPad()` to catch START - never touches the uninitialised host and cleanly
+sees GPIO only. `m_USBHCI` is still *constructed* in gadget mode (it is a
+member), but never `Initialize()`d, so it does not claim the controller; gadget
+mode is confirmed to still work with it present.
+
+The MHS35 has no GPIO buttons, so there `USB_GAMEPAD` is the only input and a
+failed host is fatal; on the GamePi20 a failed host is not fatal - the buttons
+carry on.
+
 ### Sound
 
 This section is the PWM jack path, used undocked. When docked (HDMI connected at
@@ -880,7 +906,10 @@ audible into "follows the display" and "does not".
 
 Holding **Up at power-on** boots into USB mass storage instead of the emulator:
 the SD card appears as a drive on an attached PC. `CKernel::UpHeldAtBoot()`
-reads the pin once after the pull-ups settle, and `RunUSBGadget()` takes over.
+reads the pin once after the pull-ups settle - latched into `m_bUSBGadgetBoot`
+in `Initialize()` so the USB host is left alone (see
+[USB gamepad](#usb-gamepad-optional-alongside-the-gpio-buttons)) - and `Run()`
+hands to `RunUSBGadget()`.
 
 Deliberately stateless - nothing is written and no flag survives a boot, so a
 plain power cycle is always an emulator again and the device cannot be stranded

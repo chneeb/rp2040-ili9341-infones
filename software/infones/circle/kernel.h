@@ -16,21 +16,21 @@
 #include <circle/types.h>
 #include <circle/sound/pwmsoundbasedevice.h>
 #include <circle/usb/gadget/usbmsdgadget.h>
-#ifdef PANEL_MHS35
-#include <circle/usb/usbhcidevice.h>
-#include <circle/usb/usbgamepad.h>
-#endif
 #include <SDCard/emmc.h>
 #include <fatfs/ff.h>
 
 class CRomMenu;
 
 #include "DisplayConfig.h"
+#include "InputConfig.h"
 #if HDMI_OUTPUT
 #include <circle/bcmframebuffer.h>
 #include <circle/sound/hdmisoundbasedevice.h>
 #endif
-#include "InputConfig.h"
+#if USB_GAMEPAD
+#include <circle/usb/usbhcidevice.h>
+#include <circle/usb/usbgamepad.h>
+#endif
 
 enum TShutdownMode
 {
@@ -111,10 +111,10 @@ private:
 	TShutdownMode RunUSBGadget (void);
 	void UpdateVolume (boolean bDown, boolean bUp);
 
-#ifdef PANEL_MHS35
-	// USB gamepad input, used instead of GPIO buttons on the MHS35/Pi 3B. The
-	// discovery and normalisation are lifted from the circle-arcade project,
-	// which uses the same pad.
+#if USB_GAMEPAD
+	// USB gamepad input. The only input on the MHS35/Pi 3B; on the GamePi20 it
+	// works alongside the GPIO buttons. The discovery and normalisation are
+	// lifted from the circle-arcade project, which uses the same pad.
 	void PollGamePad (void);
 	static void GamePadStatusHandler (unsigned nDeviceIndex, const TGamePadState *pState);
 	static void GamePadRemovedHandler (CDevice *pDevice, void *pContext);
@@ -139,11 +139,18 @@ private:
 	CEMMCDevice		m_EMMC;
 	FATFS			m_FileSystem;
 
-#ifdef PANEL_MHS35
+#if USB_GAMEPAD
 	CUSBHCIDevice		m_USBHCI;
 	CUSBGamePadDevice * volatile m_pGamePad = 0;
 	TGamePadState		m_GamePadState;
+	// True once the USB host stack is up. False in gadget mode (host never
+	// initialised), so PollGamePad no-ops and ReadPad falls back to GPIO only.
+	boolean			m_bUSBHostActive = FALSE;
 #endif
+
+	// Latched once at boot: Up was held, so Run() heads for USB gadget mode
+	// rather than the emulator, and the USB host is left alone for the gadget.
+	boolean			m_bUSBGadgetBoot = FALSE;
 
 	static const unsigned GPIOButtonCount = 10;
 	CGPIOPin		m_ButtonPins[GPIOButtonCount];

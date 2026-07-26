@@ -25,6 +25,23 @@
 #define GPIO_BUTTON_TL		5
 #define GPIO_BUTTON_TR		6
 
+// USB gamepad support (Circle's USB host stack + CUSBGamePadDevice).
+//
+// On the MHS35 it is the *only* input, so it is always on. On the GamePi20 it is
+// *additional* to the GPIO buttons above - either can be used - and is active
+// only when the device is not in USB mass-storage gadget mode, because the Zero
+// has a single USB OTG port that is a host (for the pad) or a device (for the
+// gadget), never both. That is decided once at boot: holding Up picks the
+// gadget and leaves USB alone; otherwise the host comes up and looks for a pad.
+//
+// Set to 0 on the GamePi20 to leave USB host out entirely (e.g. if its init ever
+// misbehaves at boot); the GPIO buttons are unaffected.
+#ifdef PANEL_MHS35
+#define USB_GAMEPAD		1
+#else
+#define USB_GAMEPAD		1
+#endif
+
 // Set to 0 to leave the sound device unopened altogether. InfoNES_SoundOpen()
 // then fails, APU_Mute stays set, and the APU does no work at all - so this
 // also frees the CPU time the mixing took, and leaves GPIO 18 undriven.
