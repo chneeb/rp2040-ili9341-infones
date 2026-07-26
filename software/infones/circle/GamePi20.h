@@ -56,8 +56,9 @@ int GamePi20_SoundOpen (int nSampleRate);
 // platform layer routes audio to HDMI instead of the PWM jack.
 int GamePi20_HdmiActive (void);
 
-// Start HDMI audio at nSampleRate (44100 for NTSC). Returns 0 on success.
-int GamePi20_SoundOpenHDMI (int nSampleRate);
+// Start HDMI audio (device runs at 44100). nInputRate is the APU's effective
+// rate - 22050 NTSC, ~18347 PAL - which sets the rate conversion. 0 on success.
+int GamePi20_SoundOpenHDMI (int nInputRate);
 
 void GamePi20_SoundClose (void);
 

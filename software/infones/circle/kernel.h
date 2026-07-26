@@ -84,9 +84,10 @@ public:
 	unsigned GetMeasuredFPS (void) const	{ return m_nLastGameFPS; }
 	int SoundOpen (int nSampleRate);
 #if HDMI_OUTPUT
-	// Open the HDMI sound device instead of the PWM one, for docked play. Used
-	// only for NTSC, whose 22050 doubles exactly to HDMI's 44100.
-	int SoundOpenHDMI (int nSampleRate);
+	// Open the HDMI sound device (at 44100) instead of the PWM one, for docked
+	// play. nInputRate is the APU's effective rate - 22050 NTSC, ~18347 PAL -
+	// which sets the rate conversion up to 44100.
+	int SoundOpenHDMI (int nInputRate);
 #endif
 	void SoundClose (void);
 	int SoundWrite (const unsigned char *pSamples, int nCount);
@@ -177,10 +178,21 @@ private:
 	// it can be either the PWM device (handheld) or the HDMI device (docked).
 	CSoundBaseDevice *m_pSound = 0;
 
-	// True when m_pSound is the HDMI device: it runs at 44100 and takes each
-	// 22050 NES sample twice (2:1) as a stereo pair. Changes the SoundWrite
-	// duplication and the buffer-room accounting.
+	// True when m_pSound is the HDMI device: it runs at 44100 and the APU's
+	// samples are rate-converted up to it. Changes the SoundWrite path and the
+	// buffer-room accounting.
 	boolean m_bHDMIAudio = FALSE;
+
+	// HDMI rate conversion. NTSC (22050) is an exact 2:1 to 44100, done by
+	// duplicating each sample; PAL (~18347) is a fractional ratio and goes
+	// through a streaming linear resampler, whose state is carried across
+	// SoundWrite calls. m_nResampleStep is the input-samples-per-output-sample
+	// in 16.16 fixed point ((inputRate << 16) / 44100); it also gives the
+	// frames-per-input ratio for the buffer accounting, for both paths.
+	boolean m_bHDMIResample = FALSE;
+	u32 m_nResampleStep = 0;
+	u32 m_nResamplePhase = 0;		// position between prev and cur, 16.16
+	unsigned char m_nResamplePrev = 128;	// last input sample (silence = 128)
 
 	// Lives for the whole session: InfoNES_Main() comes back to the menu
 	// every time a game is quit.

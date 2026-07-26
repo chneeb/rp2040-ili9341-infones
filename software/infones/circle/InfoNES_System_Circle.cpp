@@ -563,21 +563,21 @@ void InfoNES_SoundInit (void)
 int InfoNES_SoundOpen (int samples_per_sync, int sample_rate)
 {
 	// Docked (a monitor connected at boot): the audio goes out over HDMI, not
-	// the PWM jack. HDMI needs a standard sample rate, and the NES's NTSC 22050
-	// doubles exactly to 44100, so an NTSC game plays with no resampler. PAL's
-	// rate has no clean integer path to a legal HDMI rate, so a PAL game is left
-	// silent when docked for now (any open device is closed first). Undocked,
-	// this whole block is skipped and the PWM path below runs unchanged.
+	// the PWM jack. HDMI runs at 44100 and the APU's samples are rate-converted
+	// up to it - NTSC's 22050 an exact 2:1, PAL's ~18347 through the resampler.
+	// The input rate handed over is the same one the PWM path would open at (see
+	// below), so the two paths agree on what PAL means. Undocked, this block is
+	// skipped and the PWM path below runs unchanged.
 	if (GamePi20_HdmiActive ())
 	{
+		int nInputRate = sample_rate;
 		if (s_bPAL)
 		{
-			GamePi20_SoundClose ();
-			APU_Mute = 1;		// silent, even after an earlier NTSC game
-			return 0;
+			nInputRate = (int) ((u64) sample_rate * FRAME_PERIOD_NTSC_US
+					    / FRAME_PERIOD_PAL_US);
 		}
 
-		int nHDMI = GamePi20_SoundOpenHDMI (44100);
+		int nHDMI = GamePi20_SoundOpenHDMI (nInputRate);
 		if (nHDMI == 0)
 		{
 			APU_Mute = 0;

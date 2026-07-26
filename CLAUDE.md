@@ -659,7 +659,7 @@ perceive for a volume control and would be wrong for anything twitchy.
 ### Sound
 
 This section is the PWM jack path, used undocked. When docked (HDMI connected at
-boot) audio routes to HDMI instead - see [HDMI audio](#hdmi-audio-docked-ntsc).
+boot) audio routes to HDMI instead - see [HDMI audio](#hdmi-audio-docked).
 
 PWM on GPIO 18, mono, 22050 Hz (`pAPU_QUALITY` is 2 in `InfoNES_pAPU.h`). The
 APU produces 8 bit unsigned, which Circle takes directly as
@@ -1072,7 +1072,7 @@ GamePi20/Pi Zero. Verified on hardware. Gated by `HDMI_OUTPUT` in
 DisplayConfig.h (1 for both panels now). Docked play (a monitor connected at
 boot) also switches the GamePi20's panel off and routes NTSC audio over HDMI -
 see [Docked mode](#docked-mode-hdmi-only) and
-[HDMI audio](#hdmi-audio-docked-ntsc) below.
+[HDMI audio](#hdmi-audio-docked) below.
 
 **Independent hardware, no contention.** HDMI is the VideoCore's framebuffer
 (`CBcmFrameBuffer`), scanned out by the GPU on its own; the SPI panel is
@@ -1134,27 +1134,39 @@ The switch is decided once at boot from `HdmiConnected()` (EDID), so it is
 dock-and-boot, not hotplug. Undocked, `m_bPanelActive` stays true and the
 handheld path is byte-for-byte as before.
 
-### HDMI audio (docked, NTSC)
+### HDMI audio (docked)
 
-Docked audio goes out over HDMI instead of the PWM jack, on both boards.
-`CHDMISoundBaseDevice` is a `CSoundBaseDevice`, so it takes the same queue API
-(`AllocateQueue`/`SetWriteFormat`/`Write`) the PWM path uses; `m_pSound` is a
-base-class pointer that holds whichever device is open. The routing decision is
-in `InfoNES_SoundOpen` (which already knows the region) via
-`GamePi20_HdmiActive()`:
+Docked audio goes out over HDMI instead of the PWM jack, on both boards and for
+both regions. `CHDMISoundBaseDevice` is a `CSoundBaseDevice`, so it takes the
+same queue API (`AllocateQueue`/`SetWriteFormat`/`Write`) the PWM path uses;
+`m_pSound` is a base-class pointer that holds whichever device is open. The HDMI
+device always runs at **44100** (HDMI needs a standard rate; the APU's 22050 and
+~18347 are not), and the APU's samples are rate-converted up to it. The routing
+decision is in `InfoNES_SoundOpen` (which knows the region) via
+`GamePi20_HdmiActive()`, handing over the APU's effective input rate:
 
-- **NTSC:** open the HDMI device at **44100** and write each 22050 NES sample
-  **twice**. NES NTSC audio is 22050 and 44100 is exactly 2x, so this is an
-  exact 2:1 upsample - correct pitch, **no resampler and no core change**. The
-  doubling is in `SoundWrite` (two stereo frames per sample, mono duplicated to
-  L/R since HDMI is stereo), and `SoundBufferAvail` returns **half** the free
-  frames so the APU does not over-generate and buzz.
-- **PAL:** silent when docked - see below. Its rate has no clean integer path to
-  a legal HDMI rate, so the device is closed and `APU_Mute` set.
+- **NTSC (22050):** exact 2:1, so each sample is written **twice** - correct
+  pitch, no resampler. The doubling is in `SoundWrite` (two stereo frames per
+  sample, mono duplicated to L/R since HDMI is stereo).
+- **PAL (~18347):** a fractional 2.4037:1, done by a **streaming linear
+  resampler** in `SoundWrite`. Stretching the ~18347/s stream over 44100/s in
+  real time drops the pitch to 0.83 - exactly what the slow PWM clock gives PAL
+  on the jack (see [Region](#region-ntsc-and-pal)), done in software because
+  HDMI cannot be clocked slow. The resampler state (a 16.16 phase accumulator
+  and the previous sample) carries across `SoundWrite` calls so interpolation is
+  continuous across block boundaries.
 
-Switching NTSC<->PAL while docked reopens/closes the device through the existing
-bounded `SoundClose` (which waits out `IsActive()` so the DMA is not torn down
-mid-transfer). Undocked, none of this runs and the PWM path is unchanged.
+`SoundBufferAvail` scales the free frames by `m_nResampleStep` (inputRate/44100
+in 16.16, the frames-per-input reciprocal) for both regions, so the APU
+generates the right number of input samples and does not over-generate and buzz.
+Any tiny rate error cannot accumulate: the loop is closed - the APU generates
+`min(room, n)` - so the queue level feeds back into how much is asked for
+(measured drift is ~1 sample in 10 s for PAL).
+
+Switching NTSC<->PAL while docked reopens the device (the input rate, stored in
+`m_nSoundRate`, changes) through the existing bounded `SoundClose` (which waits
+out `IsActive()` so the DMA is not torn down mid-transfer). Undocked, none of
+this runs and the PWM path is unchanged.
 
 **MHS35 note:** docked audio moves to HDMI even though the MHS35 keeps its panel
 *and* its analog jack - a monitor with no speakers means silence there. Making
@@ -1162,14 +1174,6 @@ HDMI-audio GamePi20-only, or feeding both jack and HDMI, is a small change if it
 ever matters.
 
 ### Not done yet
-
-- **PAL audio over HDMI.** NTSC works (above); PAL is silent when docked. The
-  problem is that the APU generates 5/6 as many samples a second at 50 Hz pacing
-  (~18375/s), which the PWM jack absorbs by opening slow (18347 Hz) - but HDMI
-  is locked to a standard rate, so the slow-clock trick is unavailable. It needs
-  a real resampler from the APU's PAL output rate to 44100 (which also corrects
-  the pitch, in software, the way the slow clock does in hardware). See the
-  detailed note when picking this up next.
 
 - **MHS35 aspect ratio.** Currently fills 480x320. This is really an *NTSC*
   problem, because NTSC and PAL differ in pixel aspect:

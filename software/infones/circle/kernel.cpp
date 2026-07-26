@@ -656,19 +656,25 @@ int CKernel::SoundOpen (int nSampleRate)
 }
 
 #if HDMI_OUTPUT
+// The rate the HDMI sound device is opened at. A standard rate is required (the
+// APU's 22050/18347 are not), and 44100 is the one both regions convert to.
+#define HDMI_AUDIO_RATE		44100
+
 // The docked audio path: the PWM jack is replaced by the HDMI sound device,
-// which the VideoCore scans out on the same cable as the picture. It needs a
-// standard rate - 22050 is not one - so it runs at 44100 and SoundWrite feeds
-// each 22050 NES sample twice (an exact 2:1, so the pitch is right and there is
-// no resampler). Only NTSC is routed here; a PAL game stays silent when docked.
-int CKernel::SoundOpenHDMI (int nSampleRate)
+// which the VideoCore scans out on the same cable as the picture. The device
+// runs at 44100 and the APU's samples are rate-converted up to it in SoundWrite:
+// NTSC's 22050 is an exact 2:1 (duplicated), PAL's ~18347 goes through the
+// linear resampler. nInputRate selects which, and sets the buffer accounting.
+int CKernel::SoundOpenHDMI (int nInputRate)
 {
 #if !SOUND_ENABLED
 	return -1;
 #else
 	if (m_pSound != 0)
 	{
-		if (m_bHDMIAudio && (int) m_nSoundRate == nSampleRate)
+		// m_nSoundRate holds the input rate, so a region change (which changes
+		// it) reopens while a reload at the same rate is a no-op.
+		if (m_bHDMIAudio && (int) m_nSoundRate == nInputRate)
 		{
 			return 0;
 		}
@@ -676,7 +682,7 @@ int CKernel::SoundOpenHDMI (int nSampleRate)
 		SoundClose ();
 	}
 
-	m_pSound = new CHDMISoundBaseDevice (&m_Interrupt, nSampleRate);
+	m_pSound = new CHDMISoundBaseDevice (&m_Interrupt, HDMI_AUDIO_RATE);
 	if (m_pSound == 0)
 	{
 		return -1;
@@ -703,7 +709,14 @@ int CKernel::SoundOpenHDMI (int nSampleRate)
 	}
 
 	m_bHDMIAudio = TRUE;
-	m_nSoundRate = nSampleRate;
+	m_nSoundRate = nInputRate;
+
+	// Input samples per output sample, 16.16. Exactly 0.5 for NTSC (2:1). The
+	// exact-half case takes the cheaper duplication path in SoundWrite.
+	m_nResampleStep = (u32) (((u64) nInputRate << 16) / HDMI_AUDIO_RATE);
+	m_bHDMIResample = (nInputRate * 2 != HDMI_AUDIO_RATE);
+	m_nResamplePhase = 0;
+	m_nResamplePrev = 128;			// silence
 
 	return 0;
 #endif
@@ -741,6 +754,7 @@ void CKernel::SoundClose (void)
 	m_pSound = 0;
 	m_nSoundRate = 0;
 	m_bHDMIAudio = FALSE;
+	m_bHDMIResample = FALSE;
 }
 
 // Whatever does not fit is dropped. Waiting for room would stall the frame the
@@ -754,10 +768,58 @@ int CKernel::SoundWrite (const unsigned char *pSamples, int nCount)
 	}
 
 #if HDMI_OUTPUT
+	if (m_bHDMIAudio && m_bHDMIResample)
+	{
+		// PAL: fractional rate up to 44100, streaming linear interpolation. The
+		// APU produces ~18347 samples a second (its NTSC math paced at 50 Hz);
+		// stretched to 44100 in real time, each sample spans longer, which drops
+		// the pitch to 0.83 - exactly what the slow PWM clock gives PAL on the
+		// jack, done here in software because HDMI cannot be clocked slow.
+		//
+		// Phase is the position between the previous input sample and the
+		// current one, 16.16; each input advances it by 1.0 (65536) worth of
+		// output steps. prev and phase carry across calls, so a rate error only
+		// nudges the queue, which the room feedback in SoundBufferAvail corrects.
+		static unsigned char Buf[2 * 512];	// stereo frames
+		int nFrames = 0;
+
+		for (int i = 0; i < nCount; i++)
+		{
+			int cur = pSamples[i];
+
+			while (m_nResamplePhase < (1 << 16))
+			{
+				int out = m_nResamplePrev
+					+ (((cur - (int) m_nResamplePrev)
+					    * (int) m_nResamplePhase) >> 16);
+
+				Buf[2 * nFrames]     = (unsigned char) out;
+				Buf[2 * nFrames + 1] = (unsigned char) out;
+				if (++nFrames == 512)
+				{
+					m_pSound->Write (Buf, nFrames * 2);
+					nFrames = 0;
+				}
+
+				m_nResamplePhase += m_nResampleStep;
+			}
+
+			m_nResamplePhase -= (1 << 16);
+			m_nResamplePrev = (unsigned char) cur;
+		}
+
+		if (nFrames > 0)
+		{
+			m_pSound->Write (Buf, nFrames * 2);
+		}
+
+		return nCount;
+	}
+
 	if (m_bHDMIAudio)
 	{
-		// NES mono at 22050 -> HDMI stereo at 44100. Each sample becomes two
-		// stereo frames: doubled in time for the 2x rate, and duplicated across
+		// NTSC: mono 22050 -> HDMI stereo 44100. Each sample becomes two stereo
+		// frames: doubled in time for the exact 2x rate, and duplicated across
 		// L/R because HDMI carries stereo. So one NES sample is four bytes out.
 		static unsigned char Buf[4 * 512];
 		int nDone = 0;
@@ -829,12 +891,15 @@ int CKernel::SoundBufferAvail (void)
 			  - (int) m_pSound->GetQueueFramesAvail ();
 
 #if HDMI_OUTPUT
-	// Each NES sample becomes two HDMI frames, so the room the APU may fill is
-	// half the frames free. Without this the APU generates twice what fits and
-	// the extra is dropped - audible as a buzz.
+	// Each NES sample becomes 44100/inputRate HDMI frames, so the room the APU
+	// may fill is fewer input samples than there are free frames. m_nResampleStep
+	// is inputRate/44100 in 16.16, which is exactly that frames-per-input ratio's
+	// reciprocal - so free_frames * step >> 16 is the input-sample room (half the
+	// frames for NTSC's 2:1, ~0.416 for PAL). Without this the APU over-generates
+	// and the surplus is dropped, heard as a buzz.
 	if (m_bHDMIAudio)
 	{
-		return nFramesRoom / 2;
+		return (int) (((u64) nFramesRoom * m_nResampleStep) >> 16);
 	}
 #endif
 
@@ -1125,15 +1190,15 @@ int GamePi20_HdmiActive (void)
 #endif
 }
 
-int GamePi20_SoundOpenHDMI (int nSampleRate)
+int GamePi20_SoundOpenHDMI (int nInputRate)
 {
 #if HDMI_OUTPUT
 	CKernel *pKernel = CKernel::Get ();
 	assert (pKernel != 0);
 
-	return pKernel->SoundOpenHDMI (nSampleRate);
+	return pKernel->SoundOpenHDMI (nInputRate);
 #else
-	(void) nSampleRate;
+	(void) nInputRate;
 	return -1;
 #endif
 }
