@@ -108,7 +108,12 @@ elseif(HARDWARE_TARGET STREQUAL "PICO_RESTOUCH")
     set(AUDIO_OUTPUT "I2S")
     set(I2S_DATA_PIN "26")        # DIN
     set(I2S_CLOCK_PIN_BASE "27")  # BCK=27, LRCK=28 (must be consecutive)
-    set(I2S_GAIN_PERCENT "150")   # output gain after DC removal; saturates
+    # Output gain after DC removal; saturates rather than wrapping. Only a
+    # default: a plain set() here would shadow -DI2S_GAIN_PERCENT=<n> from the
+    # command line (a cache variable), silently ignoring it.
+    if(NOT DEFINED I2S_GAIN_PERCENT)
+        set(I2S_GAIN_PERCENT "100")
+    endif()
 
 elseif(HARDWARE_TARGET STREQUAL "WAVESHARE_LCD13")
     # RP2350 + ST7789 240x240 — spi1 LCD only (no SD slot, no touch), GPIO buttons + joystick
@@ -229,9 +234,9 @@ if(NOT DEFINED AUDIO_OUTPUT)
 endif()
 if(AUDIO_OUTPUT STREQUAL "I2S")
     math(EXPR I2S_LRCK_PIN "${I2S_CLOCK_PIN_BASE} + 1")
-    message("Audio               : I2S DAC  DIN=GP${I2S_DATA_PIN} BCK=GP${I2S_CLOCK_PIN_BASE} LRCK=GP${I2S_LRCK_PIN}")
+    message("Audio               : I2S DAC  DIN=GP${I2S_DATA_PIN} BCK=GP${I2S_CLOCK_PIN_BASE} LRCK=GP${I2S_LRCK_PIN}, gain ${I2S_GAIN_PERCENT}%")
     if(NOT DEFINED I2S_GAIN_PERCENT)
-        set(I2S_GAIN_PERCENT "150")
+        set(I2S_GAIN_PERCENT "100")
     endif()
     target_compile_definitions(infoNES PRIVATE
         I2S_AUDIO

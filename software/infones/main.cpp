@@ -118,7 +118,7 @@
 #ifdef I2S_AUDIO
 #include "i2s_output.h"
 #ifndef I2S_GAIN_PERCENT
-#define I2S_GAIN_PERCENT 150
+#define I2S_GAIN_PERCENT 100
 #endif
 #endif
 

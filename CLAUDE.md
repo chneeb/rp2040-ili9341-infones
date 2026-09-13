@@ -410,8 +410,9 @@ any gain is applied: gaining about 128 pushes a quiet passage (which sits near
 0) *further* below the rail, so everything clamps to 0 and the output becomes a
 hard-clipped square — loud and buzzy, which is exactly how the first attempt
 sounded. So the I2S path tracks the DC with a one-pole filter (shift 7, ~27 Hz
-corner at 22050), subtracts it, and applies `I2S_GAIN_PERCENT` (default 150) to
-what is left, centred on 128. `i2s_fill()` then expands the byte to signed
+corner at 22050), subtracts it, and applies `I2S_GAIN_PERCENT` (default 100 —
+the plain normalised average, which cannot clip) to what is left, centred on
+128. Raise it if a particular setup is too quiet. `i2s_fill()` then expands the byte to signed
 16-bit in both I2S channels.
 
 `I2S_DEBUG` (a CMake option: `cmake .. -DI2S_DEBUG=1`) prints once a second
@@ -473,7 +474,7 @@ GAMEPI20 also defines `DISPLAY_INVERT` (sent as `DCS_ENTER_INVERT_MODE`) — the
 | `AUDIO_PIN` | PWM audio output GPIO. Per-target; default GP7. GAMEPI20 sets GP18 (earphone jack). |
 | `I2S_AUDIO` | Use the external I2S DAC (PIO+DMA) instead of PWM. Set by `AUDIO_OUTPUT=I2S`. |
 | `I2S_DATA_PIN` / `I2S_CLOCK_PIN_BASE` | I2S DIN, and BCK (=base) / LRCK (=base+1, must be consecutive). |
-| `I2S_GAIN_PERCENT` | I2S output gain applied after DC removal, saturating. Default 150. |
+| `I2S_GAIN_PERCENT` | I2S output gain applied after DC removal, saturating. Default 100. Per-target value is a default only, so `-DI2S_GAIN_PERCENT=<n>` wins. |
 | `DISABLE_AUDIO` | Short-circuit `InfoNES_SoundOutput` and skip `multicore_launch_core1` — emulator runs silent. Used by GAMEPI20 while the GP18 audio is being investigated. |
 | `FLASHFS_ENABLED` | Compile and link `drivers/flashfs/`; `sdcard.c` dispatches FatFs drive 1 to it. GAMEPI20 only. |
 | `FLASHFS_BASE_ADDR` / `FLASHFS_SIZE_BYTES` | XIP address and byte size of the flash-resident FAT32 image. GAMEPI20: `0x10200000` / 14 MB. |
