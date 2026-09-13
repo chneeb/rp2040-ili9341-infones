@@ -122,45 +122,61 @@
 #define I2S_GAIN_PERCENT 100
 #endif
 
-/* Per-channel mix weights.
+/* The 2A03's sound mixer.
  *
- * The five APU channels arrive on different scales: a pulse is 0x11 * vol so
- * 0..255, the triangle is a 0..255 waveform, noise is bare ApuC4Vol (0..15)
- * and DPCM is 0..63. Putting them on a common scale is not the same as
- * mixing them correctly — the 2A03's own mixer weights them unequally. Taking
- * its linear approximation (pulse 0.00752 per unit, triangle 0.00851, noise
- * 0.00494) relative to a pulse:
+ * The five channels do not mix linearly on the real chip, and that is the
+ * whole story behind percussion sounding harsh. Its two DACs are resistor
+ * ladders whose output saturates:
  *
- *   pulse     x1.00      already 0..255
- *   triangle  x1.13      9/8
- *   noise     x0.66      17 * 0.66 = 11, where 17 would merely make noise as
- *                        loud as a pulse at the same volume setting
- *   DPCM      —          left at 4; the linear approximation does not hold
- *                        for DPCM's range and the real mixer compresses it
+ *   pulse_out = 95.52  / (8128  / (p1 + p2)         + 100)
+ *   tnd_out   = 163.67 / (24329 / (3*t + 2*n + d)   + 100)
  *
- * Noise at 17 is ~50% hotter than the chip, which is heard as brushy
- * percussion sitting on top of the music. Overridable per build
- * (-DAPU_MIX_NOISE=<n>) for tuning by ear. */
-#ifndef APU_MIX_TRIANGLE_NUM
-#define APU_MIX_TRIANGLE_NUM 9
-#endif
-#ifndef APU_MIX_TRIANGLE_DEN
-#define APU_MIX_TRIANGLE_DEN 8
-#endif
-#ifndef APU_MIX_NOISE
-#define APU_MIX_NOISE 11
-#endif
-#ifndef APU_MIX_DPCM
-#define APU_MIX_DPCM 4
-#endif
+ * Triangle, noise and DPCM share the second one, so noise's contribution
+ * shrinks as the other two rise. A linear sum has no such behaviour: it gives
+ * noise its full small-signal weight all the time, and drums, hats and
+ * explosions ride over the music. Weighting noise "correctly" for a linear
+ * sum (x0.66 of a pulse, the small-signal slope of those same formulas) does
+ * not fix it, and neither does any other single number — which is why x17,
+ * x14 and x11 all sounded much the same.
+ *
+ * For contrast the Circle port sums the raw buffers, leaving noise at 1/17 of
+ * a pulse purely because that is the ratio of their native ranges. It does not
+ * sound harsh, but it is 11x quieter than the chip rather than right.
+ *
+ * Both DACs are small enough to tabulate — 31 and 203 entries, built at
+ * compile time — so this costs two array reads per sample.
+ *
+ * InfoNES' buffers are recovered to the chip's own channel values first: a
+ * pulse is 0x11 * vol and the triangle a 0..255 waveform (both map back by
+ * x15/255), noise is already the 0..15 volume, and DPCM is the 7-bit level
+ * halved, so it doubles back to 0..126. */
+struct ApuMixTables
+{
+    int16_t pulse[31];      /* p1 + p2, each 0..15                */
+    int16_t tnd[203];       /* 3*t + 2*n + d, t/n 0..15, d 0..126 */
+};
 
-/* Loudest the weighted sum can be: both pulses + triangle + noise + DPCM. */
-#define APU_MIX_FULL_SCALE (255 + 255 + (255 * APU_MIX_TRIANGLE_NUM) / APU_MIX_TRIANGLE_DEN \
-                            + 15 * APU_MIX_NOISE + 63 * APU_MIX_DPCM)
+static constexpr ApuMixTables makeApuMixTables()
+{
+    ApuMixTables t = {};
+    /* Scaled so pulse_out + tnd_out at full scale is 32767. */
+    for (int i = 1; i < 31; i++)
+    {
+        t.pulse[i] = (int16_t)(95.52 / (8128.0 / i + 100.0) * 32767.0 + 0.5);
+    }
+    for (int i = 1; i < 203; i++)
+    {
+        t.tnd[i] = (int16_t)(163.67 / (24329.0 / i + 100.0) * 32767.0 + 0.5);
+    }
+    return t;
+}
+static constexpr ApuMixTables apuMix = makeApuMixTables();
 
-/* Full scale -> 32767 at gain 100, as 8.8 fixed point so the multiply stays
- * inside 32 bits. Constant-folded; the weights never cost anything at run time. */
-#define I2S_MIX_SCALE_Q8 ((32767 * I2S_GAIN_PERCENT * 256) / (APU_MIX_FULL_SCALE * 100))
+/* Trim for taste, applied to the noise channel before the mixer. 100 is the
+ * chip. Overridable per build: cmake .. -DAPU_MIX_NOISE_PERCENT=<n>. */
+#ifndef APU_MIX_NOISE_PERCENT
+#define APU_MIX_NOISE_PERCENT 100
+#endif
 #endif
 
 
@@ -805,14 +821,21 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
              /* The five channels do NOT share a range: the two pulses and the
               * triangle are 0..255 (pulse tables hold 0x11 * vol, vol 0..15),
               * noise is only 0..15 (ApuC4Vol) and DPCM 0..63. Normalise each
-              * to a common scale and sum, weighted as the 2A03's own mixer
-              * weights them (see APU_MIX_* above). Kept at full width rather
-              * than averaged back down to a byte, since the DAC is 16-bit. */
+              * through the 2A03's own two saturating DACs, which is what
+              * keeps percussion in its place — see ApuMixTables above. */
              {
-                 int sum = w1 + w2
-                         + (w3 * APU_MIX_TRIANGLE_NUM) / APU_MIX_TRIANGLE_DEN
-                         + w4 * APU_MIX_NOISE
-                         + w5 * APU_MIX_DPCM;
+                 /* Back to the chip's own channel values, then through its two
+                  * saturating DACs (see ApuMixTables above). */
+                 int pulses = (w1 * 15 + 127) / 255 + (w2 * 15 + 127) / 255;
+                 int tri    = (w3 * 15 + 127) / 255;
+                 int noise  = (w4 * APU_MIX_NOISE_PERCENT) / 100;
+                 int dpcm   = w5 * 2;
+                 int tnd = 3 * tri + 2 * noise + dpcm;
+                 /* Bounds: chip values cannot exceed these, but a noise trim
+                  * above 100% can. */
+                 if (pulses > 30) pulses = 30;
+                 if (tnd > 202) tnd = 202;
+                 int sum = apuMix.pulse[pulses] + apuMix.tnd[tnd];
 
                  /* The APU's signal is UNIPOLAR: silence is 0, and the DC level
                   * rides up and down with how many channels are sounding. Track
@@ -825,8 +848,8 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
                  dc_acc += (((int32_t)sum << 8) - dc_acc) >> 7;
                  int ac = sum - (dc_acc >> 8);
 
-                 /* Full scale -> 32767 at gain 100, saturating. */
-                 int v = (ac * I2S_MIX_SCALE_Q8) >> 8;
+                 /* The tables already span 0..32767, so gain 100 is unity. */
+                 int v = (ac * I2S_GAIN_PERCENT) / 100;
                  if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
                  *p++ = (int16_t)v;
              }

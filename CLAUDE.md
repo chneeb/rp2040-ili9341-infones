@@ -468,23 +468,42 @@ ST7789/PWM branch scales the sum by 16 into a `BYTE`; the ILI9341 `/4` branch
 reaches 332 on a loud frame — both wrap around inside the byte, heard as
 crackle on peaks.
 
-The I2S branch instead sums the channels **weighted as the 2A03's own mixer
-weights them**, at full width rather than averaged back into a byte, and
-**saturates** rather than wrapping. Full scale maps to 32767 at gain 100.
+The I2S branch instead runs the channels through **the 2A03's own two
+saturating DACs**, tabulated at compile time (`ApuMixTables` in `main.cpp`,
+31 + 203 entries, two array reads per sample):
 
-Putting the channels on a common scale is not the same as mixing them
-correctly. Taking the chip's linear approximation (pulse 0.00752 per unit,
-triangle 0.00851, noise 0.00494) relative to a pulse gives `APU_MIX_*` in
-`main.cpp`: triangle x9/8, **noise x11**, DPCM x4 (left alone — the linear
-approximation does not hold over DPCM's range and the real mixer compresses
-it). Noise at x17 — the value that merely makes it as loud as a pulse at the
-same volume setting — is ~50% hotter than the chip, and is heard as **brushy
-percussion** sitting on top of the music. Each weight is overridable per build
-(`cmake .. -DAPU_MIX_NOISE=<n>`, forwarded to the compiler by the foreach in
-CMakeLists.txt — a `#ifndef` default in the C code is not enough on its own,
-cmake will take the -D, pass it to nobody and warn that it went unused) for
-tuning by ear; the full-scale constant derives from the weights, so the level
-stays put whatever they are set to. `-U<name>` returns one to its default.
+```
+pulse_out = 95.52  / (8128  / (p1 + p2)       + 100)
+tnd_out   = 163.67 / (24329 / (3t + 2n + d)   + 100)
+```
+
+InfoNES' buffers are recovered to the chip's own channel values first (a pulse
+is `0x11 * vol`, the triangle a 0..255 waveform, noise already the 0..15
+volume, DPCM the 7-bit level halved). Full scale is 32767, so `I2S_GAIN_PERCENT`
+100 is unity.
+
+**This is more correct but it is not a cure for harsh percussion — measured,
+it is within 4% of the linear ×11 weight it replaced.** The three mixes, in
+units of 32767:
+
+| | nonlinear | linear ×11 | Circle |
+|---|---|---|---|
+| noise alone, vol 15 | 5887 | 4457 | 471 |
+| one pulse alone, vol 15 | 4876 | 6888 | 8011 |
+| what noise adds over a triangle | **4266** | **4457** | **471** |
+
+So on the real chip **noise is about as loud as a pulse**, and the saturation
+only trims it by a quarter when the triangle is also sounding. The Circle port
+is quiet there for an unintended reason: it sums the raw buffers
+(`w1+w2+w3+w4+w5`), and noise's native range is 0..15 against a pulse's
+0..255, so noise lands at 1/17 — about **9x quieter than the chip**. That, not
+the mixer maths, is the whole audible difference between the two ports.
+
+If chip-accurate percussion is too brushy, the two levers are
+`-DAPU_MIX_NOISE_PERCENT=<n>` (25 is halfway to Circle, 10 is Circle), and
+raising `pAPU_QUALITY` — a suspect in its own right, since the noise channel's
+LFSR runs far above 22050 and aliases into hiss at that sample rate, which
+would make the chip's own amplitude sound wrong even when it is right.
 
 Two things this cannot fix, worth not chasing: the mix is **linear** where the
 chip's is compressive, so loud multi-channel passages sum harder than they

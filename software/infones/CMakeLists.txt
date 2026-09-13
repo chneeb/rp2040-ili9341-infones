@@ -244,11 +244,11 @@ if(AUDIO_OUTPUT STREQUAL "I2S")
         I2S_CLOCK_PIN_BASE=${I2S_CLOCK_PIN_BASE}
         I2S_GAIN_PERCENT=${I2S_GAIN_PERCENT}
     )
-    # APU mix weights (main.cpp APU_MIX_*). Defaults live in the C code; these
-    # only forward a -DAPU_MIX_NOISE=<n> style override to the compiler. Without
+    # APU mix trim (main.cpp APU_MIX_*). Defaults live in the C code; these
+    # only forward a -DAPU_MIX_NOISE_PERCENT=<n> override to the compiler. Without
     # this, cmake accepts the -D, passes it to nobody, and warns that it went
     # unused -- while the build silently keeps the default.
-    foreach(mixvar APU_MIX_NOISE APU_MIX_TRIANGLE_NUM APU_MIX_TRIANGLE_DEN APU_MIX_DPCM)
+    foreach(mixvar APU_MIX_NOISE_PERCENT)
         if(DEFINED ${mixvar})
             target_compile_definitions(infoNES PRIVATE ${mixvar}=${${mixvar}})
             message("                      + ${mixvar}=${${mixvar}}")
