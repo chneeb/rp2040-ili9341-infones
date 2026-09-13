@@ -1043,32 +1043,78 @@ volatile bool draw_this_frame = true;
 static void __not_in_flash_func(speed_control)(void)
 {
   static uint64_t deadline = 0;
+  static int skip_run = 0;    /* how firmly we are in skip-every-other mode */
+  static int drawn_run = 0;   /* drawn frames since the last parity flip */
 
 // frame timing control
   uint64_t cur_time = time_us_64();
   if (deadline == 0) deadline = cur_time;
 
-  if ((int64_t)(cur_time - deadline) <= 0)
+  int64_t late = (int64_t)(cur_time - deadline);
+
+  if (late <= 0)
   {
       /* Made the deadline with time to spare — wait it out and draw the next
        * frame to the panel as usual. */
       while ((int64_t)(time_us_64() - deadline) < 0) tight_loop_contents();
       draw_this_frame = true;
   }
+  else if (late < (int64_t)(nes_frame_period_us / 8))
+  {
+      /* Barely late: this is drift, not an overrun, and it must NOT be
+       * treated as "behind" — doing so froze the picture entirely.
+       *
+       * The audio ring throttle in InfoNES_SoundOutput() is the real master
+       * clock: it holds core0 until the DAC has drained, so the frame rate is
+       * DAC rate / 367.5 samples per frame, i.e. exactly 60.000 fps at 22050
+       * and 49.93 at 18350. Neither equals the 60.0988 / 50.007 Hz the period
+       * is set from, so every single frame ends ~30 us late. With a knife-edge
+       * test that is "behind" forever: every frame skipped, picture frozen,
+       * emulation and sound running on perfectly — until the 100 ms resync a
+       * minute later lets exactly one frame through.
+       *
+       * So absorb small lateness by re-basing on the real time instead. */
+      draw_this_frame = true;
+      deadline = cur_time;
+  }
   else
   {
-      /* Behind. A drawn frame costs ~14.8 ms of SPI on a 320-wide panel at
-       * 80 MHz, which is most of the 16.6 ms budget, so skipping the transfer
-       * is what buys the time back. Emulation still runs every frame — and
-       * that matters for more than smoothness: the APU generates a fixed 367
-       * samples per emulated frame, so emulating at 45 fps means 16500
+      /* Genuinely behind. A drawn frame costs ~14.8 ms of SPI on a 320-wide
+       * panel at 80 MHz, which is most of the 16.6 ms budget, so skipping the
+       * transfer is what buys the time back. Emulation still runs every frame
+       * — and that matters for more than smoothness: the APU generates a fixed
+       * 367 samples per emulated frame, so emulating at 45 fps means 16500
        * samples/s against the 22050/s the DAC consumes, and the soundtrack
        * plays a quarter too slow with the shortfall padded. */
       draw_this_frame = false;
       /* A long stall (ROM load, menu, flash write) must not leave us trying to
        * catch up for thousands of frames. */
-      if ((int64_t)(cur_time - deadline) > 100000) deadline = cur_time;
+      if (late > 100000) deadline = cur_time;
   }
+
+  /* Rotate which frames get dropped.
+   *
+   * Bandwidth-limited play settles into a strict draw/skip alternation, so the
+   * drawn frames are all of one parity. A sprite that flickers every frame —
+   * Mario's invincibility after a hit — then lands entirely on the frames we
+   * drop and is simply invisible until something perturbs the timing. Every
+   * few draws, skip one extra frame: that inverts the parity, so the worst
+   * case is a sprite that blinks at ~4 Hz instead of vanishing. */
+  if (draw_this_frame)
+  {
+      if (skip_run >= 2 && ++drawn_run >= 4)
+      {
+          drawn_run = 0;
+          draw_this_frame = false;
+      }
+      if (skip_run > 0) skip_run--;
+  }
+  else
+  {
+      drawn_run = 0;
+      if (skip_run < 8) skip_run++;
+  }
+
   deadline += nes_frame_period_us;
 
   // blink_led();

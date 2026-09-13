@@ -104,20 +104,33 @@ Button mapping — active low, bytes 6 and 7:
 
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` paces frames at `nes_frame_period_us` — 16639 µs, NTSC's 60.0988 Hz, not the flat 16666 it used to use (waits if the frame finishes early). See [Region](#region-ntsc-and-pal) for the PAL value.
-- **Adaptive display frame skip**: when a frame misses its 16666 µs deadline,
-  `speed_control()` clears `draw_this_frame` and `InfoNES_PostDrawLine()` returns
-  immediately for the whole next frame — emulated in full, never sent to the
-  panel. A drawn 320-wide frame costs ~14.8 ms of SPI at 80 MHz, most of the
-  budget, so dropping the transfer is what buys the time back; the picture
-  alternates while the game keeps 60 fps.
+- **Adaptive display frame skip**: when a frame misses its deadline by more
+  than an eighth of a period, `speed_control()` clears `draw_this_frame` and
+  `InfoNES_PostDrawLine()` returns immediately for the whole next frame —
+  emulated in full, never sent to the panel. A drawn 320-wide frame costs
+  ~14.8 ms of SPI at 80 MHz, most of the budget, so dropping the transfer is
+  what buys the time back; the picture alternates while the game keeps 60 fps.
 - **This is an audio correctness issue, not just smoothness.** The APU generates
-  a fixed 367 samples per *emulated* frame (`ApuSamplesPerSync16`, per scanline),
-  so emulating at 45 fps yields 16500 samples/s against the 22050/s the DAC
-  consumes — the soundtrack plays a quarter too slow with the shortfall padded.
-  Measured on PICO_RESTOUCH before the skip: 45–46 fps, 5300 samples/s short.
-  A deadline more than 100 ms stale (ROM load, menu, flash write) resyncs rather
+  a fixed 367.5 samples per *emulated* frame, so emulating at 45 fps yields
+  16500 samples/s against the 22050/s the DAC consumes — the soundtrack plays a
+  quarter too slow with the shortfall padded. Measured on PICO_RESTOUCH before
+  the skip: 45–46 fps, 5300 samples/s short.
+- **The eighth-of-a-period tolerance is load-bearing, not a nicety.** The audio
+  ring throttle in `InfoNES_SoundOutput()` is the real master clock — it holds
+  core0 until the DAC has drained — so the frame rate is *DAC rate / 367.5*:
+  exactly 60.000 fps at 22050 Hz, 49.93 at 18350. Neither matches the 60.0988 /
+  50.007 Hz the period is derived from, so **every frame ends ~30 µs late**.
+  On a knife-edge test that reads as "behind" forever: every frame skipped,
+  **picture frozen while emulation and sound run on perfectly**, until the
+  100 ms resync a minute later lets one frame through. Small lateness is drift
+  and re-bases the deadline on real time; only a real overrun skips.
+- **The drop parity rotates.** Strict alternation puts every drawn frame on one
+  parity, so a sprite that flickers every frame — Mario's invincibility after a
+  hit — can land entirely on the dropped frames and vanish until something
+  perturbs the timing. After 4 draws in skip mode one extra frame is dropped,
+  inverting the parity; the worst case becomes a ~4 Hz blink.
+- A deadline more than 100 ms stale (ROM load, menu, flash write) resyncs rather
   than trying to catch up over thousands of frames.
-- The 60 fps cap + 80 MHz SPI + 300 MHz RP2350 achieves correct NES game speed; RP2040 at 252 MHz is sufficient but closer to the margin
 
 ### Region (NTSC and PAL)
 
