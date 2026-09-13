@@ -172,10 +172,18 @@ static constexpr ApuMixTables makeApuMixTables()
 }
 static constexpr ApuMixTables apuMix = makeApuMixTables();
 
-/* Trim for taste, applied to the noise channel before the mixer. 100 is the
- * chip. Overridable per build: cmake .. -DAPU_MIX_NOISE_PERCENT=<n>. */
+/* Noise trim, applied before the mixer. 100 is the chip — and the chip is
+ * wrong here, for a reason that is not the mixer's fault: the noise channel's
+ * LFSR clocks far above the 22050 Hz InfoNES renders at (pAPU_QUALITY 2), so
+ * it is sampled far below its own rate and aliases into broadband hiss.
+ * Correct amplitude, wrong spectrum — which at full level is heard as brushy
+ * percussion over everything, and is why no amount of re-weighting the mix
+ * fixed it. 10 is the level the Circle port arrives at by accident and the
+ * value confirmed by ear here; raising pAPU_QUALITY would attack the cause
+ * rather than the symptom, at double the APU cost on core0.
+ * Per build: cmake .. -DAPU_MIX_NOISE_PERCENT=<n>. */
 #ifndef APU_MIX_NOISE_PERCENT
-#define APU_MIX_NOISE_PERCENT 100
+#define APU_MIX_NOISE_PERCENT 10
 #endif
 #endif
 

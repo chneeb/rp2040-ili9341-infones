@@ -499,11 +499,18 @@ is quiet there for an unintended reason: it sums the raw buffers
 0..255, so noise lands at 1/17 — about **9x quieter than the chip**. That, not
 the mixer maths, is the whole audible difference between the two ports.
 
-If chip-accurate percussion is too brushy, the two levers are
-`-DAPU_MIX_NOISE_PERCENT=<n>` (25 is halfway to Circle, 10 is Circle), and
-raising `pAPU_QUALITY` — a suspect in its own right, since the noise channel's
-LFSR runs far above 22050 and aliases into hiss at that sample rate, which
-would make the chip's own amplitude sound wrong even when it is right.
+**So the noise channel is turned down to `APU_MIX_NOISE_PERCENT` 10**, and
+the reason is not taste. The noise LFSR clocks far above the 22050 Hz InfoNES
+renders at (`pAPU_QUALITY` 2), so it is sampled far below its own rate and
+aliases into broadband hiss: correct amplitude, wrong spectrum. At chip level
+that is heard as brushy percussion over everything — confirmed by ear, and it
+is why re-weighting the mix (×17, ×14, ×11, nonlinear) never helped. 10 is
+where Circle lands by accident, and where this port now starts.
+
+The cause rather than the symptom would be **raising `pAPU_QUALITY` to 3**
+(44100), which would let noise run at its proper level; it costs double the
+APU work on core0, opens the DAC at 44100/36700, and needs an `#ifndef` guard
+on the core's own `#define`. Not attempted yet.
 
 Two things this cannot fix, worth not chasing: the mix is **linear** where the
 chip's is compressive, so loud multi-channel passages sum harder than they
