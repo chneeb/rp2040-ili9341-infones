@@ -104,9 +104,11 @@ Button mapping — active low, bytes 6 and 7:
 
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` paces frames at `nes_frame_period_us` — 16639 µs, NTSC's 60.0988 Hz, not the flat 16666 it used to use (waits if the frame finishes early). See [Region](#region-ntsc-and-pal) for the PAL value.
-- **Display frames are dropped on the audio queue's level, not on a clock.**
-  `speed_control()` sets `draw_this_frame` from `audioRing.readable_size()`
-  against `AUDIO_LOW_WATER_SAMPLES`, and `InfoNES_PostDrawLine()` returns
+- **Display frames are dropped on the audio queue's level, not on a clock,**
+  and at an evenly spread **cadence** rather than frame by frame.
+  `speed_control()` steers a ratio in sixteenths from
+  `audioRing.readable_size()`, a Bresenham accumulator spreads the drops, and
+  `InfoNES_PostDrawLine()` returns
   immediately for a whole dropped frame — emulated in full, never sent to the
   panel. A drawn 320-wide frame costs ~14.8 ms of SPI at 80 MHz, most of the
   budget, so dropping the transfer hands that time straight back to emulation.
@@ -136,6 +138,15 @@ Button mapping — active low, bytes 6 and 7:
   `speed_control()` therefore still caps the rate (that is what paces the menu
   and `DISABLE_AUDIO` targets) but **never carries lateness forward** — it
   re-bases on real time instead.
+- **The actuator matters as much as the signal.** Deciding per frame is
+  bang-bang: it draws six, dips below the mark, then drops four in a row. The
+  average rate is fine and it feels awful — irregular judder reads as far more
+  sluggish than a steady lower rate. A handful of fixed patterns (every frame,
+  2 of 3, every other) is not enough either: with a 22 ms drawn frame the
+  affordable rate falls *between* two of them and the controller hunts.
+  Sixteenths let it sit still. Simulated against measured frame costs, the
+  ratio gives 36–52 fps with drops spread one at a time, against 31–42 fps in
+  bursts for the fixed patterns.
 - **The drop parity rotates.** Sustained dropping settles into an alternation,
   so every drawn frame is of one parity, and a sprite that flickers every frame
   — Mario's invincibility after a hit — can land entirely on the dropped ones

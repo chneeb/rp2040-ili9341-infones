@@ -1048,14 +1048,30 @@ volatile bool emulator_running = false;
  * and the display transfer is what has to give. Half the throttle's target,
  * so ~2 frames of audio in hand, on top of the DAC's own 512-sample
  * ping-pong. */
-#define AUDIO_LOW_WATER_SAMPLES (TARGET_LATENCY_SAMPLES / 2)
+/* Queue levels the cadence is steered by, against the throttle's 1500 target.
+ * The gap between low and high is wide enough that the queue's own swing
+ * between drawn and dropped frames cannot flap the cadence. */
+#define AUDIO_LOW_WATER_SAMPLES  (TARGET_LATENCY_SAMPLES * 7 / 15)   /* 700  */
+#define AUDIO_HIGH_WATER_SAMPLES (TARGET_LATENCY_SAMPLES * 4 / 5)    /* 1200 */
+#define AUDIO_PANIC_SAMPLES      (TARGET_LATENCY_SAMPLES * 7 / 30)   /* 350  */
+
+/* The cadence is a ratio in sixteenths rather than a handful of fixed
+ * patterns. Fixed patterns hunt: with a 22 ms drawn frame the affordable rate
+ * falls between "2 of 3" and "every other", so the controller alternates
+ * between them and the judder is as irregular as the bang-bang it replaced.
+ * Sixteenths let it sit still, and the Bresenham accumulator spreads the drops
+ * one at a time. */
+#define CADENCE_DEN 16
+#define CADENCE_MIN 4                /* never below a quarter of the frames  */
 
 static void __not_in_flash_func(speed_control)(void)
 {
   static uint64_t deadline = 0;
-  static int skip_run = 0;          /* how firmly we are in skip mode      */
+  static int cadence = CADENCE_DEN; /* drawn frames per CADENCE_DEN        */
+  static int cadence_acc = 0;       /* spreads the drops evenly            */
   static int drawn_run = 0;         /* draws since the last parity flip    */
-  static int frames_since_draw = 0; /* safety net, see below               */
+  static int window_frames = 0;     /* frames in the current re-aim window  */
+  static int32_t window_min = INT32_MAX;  /* lowest queue level seen in it  */
 
 // frame timing control
   uint64_t cur_time = time_us_64();
@@ -1082,60 +1098,85 @@ static void __not_in_flash_func(speed_control)(void)
 
   /* Draw or drop this frame.
    *
-   * The question is only ever "is the emulator keeping up with the DAC", so
-   * ask the ring directly instead of inferring it from a clock. Two attempts
-   * at inferring it both failed, in opposite directions: a knife-edge test
-   * skipped every frame for ever (frozen picture, perfect sound), and a
-   * generous tolerance skipped none (45 fps, sound slow and breaking up).
+   * Two things are separate here, and conflating them is what made the last
+   * attempt feel sluggish:
    *
-   * The ring closes the loop. Drawing costs ~14.8 ms of the budget, so if it
-   * is unaffordable the queue drains, and dropping a frame hands that time
-   * straight back to emulation, which refills it. If drawing every frame is
-   * affordable the throttle holds the queue at its target and nothing is ever
-   * dropped. No accumulating state, and it self-corrects however long a stall
-   * lasts. */
+   *   WHAT to measure — the audio queue, because the APU generates a fixed
+   *   367.5 samples per *emulated* frame, so the real cost of an overrun is
+   *   the sound going slow and breaking up, not a slow picture. The queue
+   *   measures exactly that and closes the loop: drawing drains it, dropping
+   *   hands ~14.8 ms straight back to emulation and refills it.
+   *
+   *   HOW to act on it — a cadence, not a per-frame decision. Deciding frame
+   *   by frame is bang-bang control: it runs six draws, dips below the mark,
+   *   then drops four in a row. The average rate is fine but the judder is
+   *   irregular, and irregular judder reads as far more sluggish than a
+   *   steady lower rate. So the queue picks a cadence, slowly, and the
+   *   cadence is applied evenly by a Bresenham accumulator.
+   */
 #if defined(DISABLE_AUDIO)
   draw_this_frame = true;           /* no audio to starve, nothing to trade */
 #else
-  draw_this_frame = !emulator_running
-                    || audioRing.readable_size() >= AUDIO_LOW_WATER_SAMPLES;
-#endif
-
-  /* Rotate which frames get dropped.
-   *
-   * Sustained dropping settles into an alternation, so the drawn frames are
-   * all of one parity. A sprite that flickers every frame — Mario's
-   * invincibility after a hit — then lands entirely on the dropped frames and
-   * is simply invisible until something perturbs the timing. Every few draws,
-   * drop one extra frame: that inverts the parity, so the worst case is a
-   * sprite that blinks at ~4 Hz rather than vanishing. */
-  if (draw_this_frame)
+  if (!emulator_running)
   {
-      if (skip_run >= 2 && ++drawn_run >= 4)
+      /* The menu feeds no audio, so the queue says nothing about it. */
+      draw_this_frame = true;
+      cadence = 0;
+      cadence_acc = 0;
+  }
+  else
+  {
+      int level = audioRing.readable_size();
+      if (level < window_min) window_min = level;
+      window_frames++;
+
+      /* Re-aim every 8 frames, or at once if the queue is nearly out: it
+       * holds about 4 frames of audio, so a slow window would starve before
+       * it reacted. One sixteenth at a time, so the picture rate never jumps
+       * visibly. */
+      if (level < AUDIO_PANIC_SAMPLES)
+      {
+          cadence -= 2;
+          window_frames = 0;
+          window_min = INT32_MAX;
+      }
+      else if (window_frames >= 8)
+      {
+          if (window_min < AUDIO_LOW_WATER_SAMPLES)       cadence--;
+          else if (window_min > AUDIO_HIGH_WATER_SAMPLES) cadence++;
+          window_frames = 0;
+          window_min = INT32_MAX;
+      }
+      if (cadence < CADENCE_MIN) cadence = CADENCE_MIN;
+      if (cadence > CADENCE_DEN) cadence = CADENCE_DEN;
+
+      cadence_acc += cadence;
+      if (cadence_acc >= CADENCE_DEN)
+      {
+          cadence_acc -= CADENCE_DEN;
+          draw_this_frame = true;
+      }
+      else
+      {
+          draw_this_frame = false;
+      }
+
+      /* At exactly half the frames the drawn ones are all of one parity, and
+       * a sprite that flickers every frame — Mario's invincibility after a
+       * hit — lands entirely on the dropped ones and vanishes until something
+       * perturbs the timing. Drop one extra frame every 8 draws to invert the
+       * parity. Only needed at 8/16; every other ratio rotates on its own. */
+      if (cadence == CADENCE_DEN / 2 && draw_this_frame && ++drawn_run >= 8)
       {
           drawn_run = 0;
           draw_this_frame = false;
       }
-      if (skip_run > 0) skip_run--;
+      else if (cadence != CADENCE_DEN / 2)
+      {
+          drawn_run = 0;
+      }
   }
-  else
-  {
-      drawn_run = 0;
-      if (skip_run < 8) skip_run++;
-  }
-
-  /* Safety net: whatever else is going on, show something. If the emulator is
-   * so far behind that the queue never recovers, the picture would otherwise
-   * stop entirely — which is precisely the failure this has already produced
-   * twice, and it is worth one frame in eight to make it impossible. */
-  if (!draw_this_frame && ++frames_since_draw >= 8)
-  {
-      draw_this_frame = true;
-  }
-  if (draw_this_frame)
-  {
-      frames_since_draw = 0;
-  }
+#endif
 
   // blink_led();
 
