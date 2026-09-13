@@ -123,7 +123,11 @@ Button mapping — active low, bytes 6 and 7:
 
 InfoNES has no PAL support at all — the core always runs 262 scanlines — so a
 PAL ROM paced at the NTSC rate plays about **20% fast**, music and pitch
-included. `applyRegionTiming()` in `main.cpp` corrects most of that from the
+included.
+
+**The frame period is the game speed.** `speed_control()` paces the emulator
+itself, so one period governs gameplay, timers and music tempo together. The
+audio rate below is not a second speed control but a consequence of it. `applyRegionTiming()` in `main.cpp` corrects most of that from the
 ROM's 16 byte header, with the shared reader in `NesRegion.h`:
 
 | | NTSC | PAL / Dendy |
@@ -142,10 +146,13 @@ stroke, since samples computed for 22050 played at 18350 come out a factor
 Applied at game start (before `AUDIO_CORE_START()`, so core1 opens the DAC at
 the right rate) and reset to NTSC when the menu comes back.
 
-**I2S only.** The audio rate has to follow the pacing, and only the I2S device
-is opened per game — pacing a PWM target at 50 Hz while its PWM stays at 22050
-would trade "runs fast" for "underruns 17% of every second", which is worse.
-On PWM targets `applyRegionTiming()` always selects NTSC.
+**Both sinks, not just I2S.** The audio rate has to follow the pacing or the
+output starves 17% of every second. The I2S device is opened per game; the PWM
+rate is only the slice's clock divider, so `audio_set_rate()` re-aims it in
+place at any time, from either core, and even before `audio_init()` has run
+(it records the rate and init picks it up, so a watchdog reboot straight into a
+PAL game cannot race). GAMEPI20 has `DISABLE_AUDIO`, where it is a no-op on an
+uninitialised slice — that target's game speed is still corrected.
 
 **Detection believes only a NES 2.0 header**, for the reason given in the
 Circle section: iNES 1.0's PAL bit is clear on practically every dump, so

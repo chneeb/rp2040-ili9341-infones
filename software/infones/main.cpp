@@ -915,26 +915,33 @@ static int      nes_audio_rate      = NES_AUDIO_RATE_NTSC;
  * Detection believes only a NES 2.0 header (see NesRegion.h) — an undetected
  * PAL ROM behaves exactly as it did before, which is the safe way to be wrong.
  *
- * Only done where the audio rate can follow, i.e. I2S, whose device is opened
- * per game. Pacing a PWM target at 50 Hz while its PWM stays at 22050 would
- * trade "runs fast" for "underruns 17% of every second", which is worse. */
+ * The audio rate has to follow the pacing or the output starves. Both sinks
+ * can: the I2S device is opened per game, and the PWM rate is only a slice
+ * clock divider (audio_set_rate), changeable at any time. */
 static void applyRegionTiming(const uint8_t *rom)
 {
     nes_frame_period_us = NES_FRAME_PERIOD_NTSC_US;
     nes_audio_rate      = NES_AUDIO_RATE_NTSC;
-#ifdef I2S_AUDIO
-    if (!rom) return;
-    enum TNesRegion region = NesRegionFromHeader(rom);
+
+    enum TNesRegion region = rom ? NesRegionFromHeader(rom) : NesRegionNTSC;
     if (region == NesRegionPAL || region == NesRegionDendy)
     {
         nes_frame_period_us = NES_FRAME_PERIOD_PAL_US;
         nes_audio_rate      = NES_AUDIO_RATE_PAL;
     }
-    printf("Region: %c — frame %lu us, audio %d Hz\n", NesRegionChar(region),
-           (unsigned long)nes_frame_period_us, nes_audio_rate);
-#else
-    (void)rom;
+
+#ifndef I2S_AUDIO
+    /* PWM: core1 was launched once at boot, so the rate is re-aimed in place.
+     * Safe before core1 has run audio_init() — the rate is recorded and init
+     * picks it up. */
+    audio_set_rate(nes_audio_rate);
 #endif
+
+    if (rom)
+    {
+        printf("Region: %c — frame %lu us, audio %d Hz\n", NesRegionChar(region),
+               (unsigned long)nes_frame_period_us, nes_audio_rate);
+    }
 }
 
 /* Cleared by speed_control() when the previous frame missed its deadline:

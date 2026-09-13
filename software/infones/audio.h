@@ -12,6 +12,10 @@ extern "C" {
 #endif
 
 void audio_init(int audio_pin, int sample_freq);
+
+/* Change the output rate (PAL vs NTSC). Just the PWM clock divider, so it is
+ * safe at any time and from either core; may be called before audio_init(). */
+void audio_set_rate(int sample_freq);
 uint8_t *audio_get_buffer(void);
 
 int audio_play_once(const uint8_t *samples, int len);

@@ -40,6 +40,28 @@ static void __isr __time_critical_func(dma_handler)()
   dma_hw->ints1 = 1u << trigger_dma_chan;
 }
 
+/* The output rate is nothing but the PWM slice's clock divider, so it can be
+ * changed at any time — which is what a PAL ROM needs (see Region in
+ * CLAUDE.md). Kept here so the caller does not have to know the arithmetic. */
+static int   pwm_slice = -1;
+static int   pwm_rate = 0;
+static uint  pwm_f_clk_sys_khz = 0;
+
+static void audio_apply_rate(void)
+{
+  if (pwm_slice < 0 || pwm_rate <= 0) return;
+  float clock_div = ((float)pwm_f_clk_sys_khz * 1000.0f) / 254.0f / (float) pwm_rate / (float) REPETITION_RATE;
+  pwm_set_clkdiv(pwm_slice, clock_div);
+}
+
+void audio_set_rate(int sample_freq)
+{
+  pwm_rate = sample_freq;
+  /* Before audio_init() (core1 may not have run yet) this only records the
+   * rate; init picks it up rather than overwriting it with its own default. */
+  audio_apply_rate();
+}
+
 void audio_init(int audio_pin, int sample_freq)
 {
   gpio_set_function(audio_pin, GPIO_FUNC_PWM);
@@ -47,8 +69,12 @@ void audio_init(int audio_pin, int sample_freq)
   int audio_pin_slice = pwm_gpio_to_slice_num(audio_pin);
   int audio_pin_chan = pwm_gpio_to_channel(audio_pin);
 
-  uint f_clk_sys = frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_SYS);
-  float clock_div = ((float)f_clk_sys * 1000.0f) / 254.0f / (float) sample_freq / (float) REPETITION_RATE;
+  if (pwm_rate <= 0) pwm_rate = sample_freq;
+  pwm_slice = audio_pin_slice;
+  pwm_f_clk_sys_khz = frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_SYS);
+
+  uint f_clk_sys = pwm_f_clk_sys_khz;
+  float clock_div = ((float)f_clk_sys * 1000.0f) / 254.0f / (float) pwm_rate / (float) REPETITION_RATE;
 
   pwm_config config = pwm_get_default_config();
   pwm_config_set_clkdiv(&config, clock_div);
