@@ -622,6 +622,62 @@ GAMEPI20 also defines `DISPLAY_INVERT` (sent as `DCS_ENTER_INVERT_MODE`) — the
 | `DISABLE_AUDIO` | Short-circuit `InfoNES_SoundOutput` and skip `multicore_launch_core1` — emulator runs silent. Used by GAMEPI20 while the GP18 audio is being investigated. |
 | `FLASHFS_ENABLED` | Compile and link `drivers/flashfs/`; `sdcard.c` dispatches FatFs drive 1 to it. GAMEPI20 only. |
 | `FLASHFS_BASE_ADDR` / `FLASHFS_SIZE_BYTES` | XIP address and byte size of the flash-resident FAT32 image. GAMEPI20: `0x10200000` / 14 MB. |
+## Not done yet (pico-sdk port)
+
+Ideas taken from **`~/Source/shapones`** (Shapoco's NES emulator, actively
+developed for the Clockworkpi Picocalc on RP2350 — a sibling project on this
+machine, same chip, same 300 MHz, same 22050 Hz APU). Its `CLAUDE.md` is worth
+reading alongside this one. A companion note listing what should go the *other*
+way — PAL pacing, the noise-aliasing result, the per-row DMA arithmetic — was
+left there as `NOTES-from-infones.md` (untracked, deliberately).
+
+In the order they are worth doing:
+
+1. **Live runtime toggles for anything tuned by ear.** Shapones flips its
+   interlace mode with a key: a `volatile bool` set in the keyboard ISR and
+   **latched once per frame** in the render loop, so a mid-frame toggle cannot
+   split a frame. `APU_MIX_NOISE_PERCENT` and `I2S_GAIN_PERCENT` are both
+   ear-tuned constants that currently cost a rebuild and a flash per value —
+   the noise hunt alone went ×17 → ×14 → ×11 → 10% that way. A SELECT+button
+   knob would collapse that into one sitting.
+
+2. **Get the multiply out of the 256→320 scale loop.** `InfoNES_PostDrawLine()`
+   does `fb[i] = fb[i * 256 / 320]`. The compiler turns that into `umull` +
+   shift rather than a real divide, but the inner loop is still 7 instructions
+   per pixel (`umull / lsrs / ldrh / sub / strh / cmp / bne`) — about **2 ms a
+   frame** at 300 MHz for 74,000 pixels (estimate from the disassembly, not
+   measured on hardware). 256→320 is exactly 4:5, so an unrolled 4-load /
+   5-store block needs no per-pixel arithmetic at all; shapones uses Bresenham
+   and **our own Circle port already uses a precomputed column table**.
+
+   That 2 ms is the currency **`pAPU_QUALITY 3`** (44100 Hz) needs — the real
+   fix for the noise aliasing that forces `APU_MIX_NOISE_PERCENT` down to 10,
+   since doubling the APU's work is CPU and the scaler is CPU spent on a
+   multiply we do not need.
+
+3. **Interlaced transfer — optional, and not obviously worth it here.**
+   Shapones sends every other row and lets the persistent panel keep the rest,
+   which took it from 40 to 60 fps. It would not raise anything here (15.8 ms
+   already fits the 16.64 ms budget) but it would finish the transfer in 7.9 ms,
+   so the writer could never overtake the reader and the tearing race would be
+   gone at the root rather than held off by `wait_for_row_sent()`. The cost is
+   combing on fast vertical motion. Worth remembering if a higher-bandwidth
+   mode is ever wanted.
+
+4. **Open bus for write-only PPU registers — unverified here.** Shapones
+   returns the last byte on the CPU data bus when $2000/$2001/$2003/$2005/$2006
+   are read, and flags Bubble Bobble as the game that breaks without it (it
+   RTIs into PPU address space and executes what comes back). InfoNES returns
+   `wAddr >> 8` instead — the old upper-address-byte approximation, at the end
+   of `K6502_Read` in `K6502_rw.h` — so it is not obviously broken. Cheap to
+   test with a PAL Bubble Bobble.
+
+**Not portable from there:** save states (their core exposes
+`save_state`/`load_state`; InfoNES keeps the CPU registers file-scope in
+`K6502.cpp` and every mapper has private globals — the same wall the Circle
+port documents), and the PSRAM/PRG-bank-cache work, which the flash-resident
+ROM path here does not need.
+
 ## The Circle / GamePi20 port
 
 In `software/infones/circle/`. The same InfoNES core, running bare metal on a
