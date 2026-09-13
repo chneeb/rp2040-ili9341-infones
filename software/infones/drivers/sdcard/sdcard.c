@@ -91,8 +91,24 @@ static inline void cs_deselect(uint cs_pin) {
     asm volatile("nop \n nop \n nop"); // FIXME
 }
 
+/* The display DMA path is transmit-only: nothing drains the SPI receive FIFO,
+ * so after a frame it is left full of stale bytes (and the overrun flag set).
+ * The SD driver reads its responses out of that same FIFO, so the first bytes
+ * of the next SD transfer come back as display leftovers and every command
+ * response is shifted -> FR_DISK_ERR. Flush the FIFO before each SD access.
+ * (Only initSDCard() escaped this, because init_spi() resets the peripheral.) */
+static void shared_bus_flush_rx(void)
+{
+#if defined(SHARED_SPI_BUS) && !defined(SDCARD_PIO)
+    while (spi_is_busy(SDCARD_SPI_BUS)) tight_loop_contents();
+    while (spi_is_readable(SDCARD_SPI_BUS)) (void) spi_get_hw(SDCARD_SPI_BUS)->dr;
+    spi_get_hw(SDCARD_SPI_BUS)->icr = SPI_SSPICR_RORIC_BITS | SPI_SSPICR_RTIC_BITS;
+#endif
+}
+
 static void FCLK_SLOW(void)
 {
+    shared_bus_flush_rx();
 #ifndef SDCARD_PIO
     spi_set_baudrate(SDCARD_SPI_BUS, CLK_SLOW);
 #endif
@@ -100,6 +116,7 @@ static void FCLK_SLOW(void)
 
 static void FCLK_FAST(void)
 {
+    shared_bus_flush_rx();
 #ifndef SDCARD_PIO
     spi_set_baudrate(SDCARD_SPI_BUS, CLK_FAST);
 #endif
