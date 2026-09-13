@@ -115,15 +115,24 @@ Button mapping — active low, bytes 6 and 7:
   16500 samples/s against the 22050/s the DAC consumes — the soundtrack plays a
   quarter too slow with the shortfall padded. Measured on PICO_RESTOUCH before
   the skip: 45–46 fps, 5300 samples/s short.
-- **The eighth-of-a-period tolerance is load-bearing, not a nicety.** The audio
-  ring throttle in `InfoNES_SoundOutput()` is the real master clock — it holds
-  core0 until the DAC has drained — so the frame rate is *DAC rate / 367.5*:
-  exactly 60.000 fps at 22050 Hz, 49.93 at 18350. Neither matches the 60.0988 /
-  50.007 Hz the period is derived from, so **every frame ends ~30 µs late**.
-  On a knife-edge test that reads as "behind" forever: every frame skipped,
-  **picture frozen while emulation and sound run on perfectly**, until the
-  100 ms resync a minute later lets one frame through. Small lateness is drift
-  and re-bases the deadline on real time; only a real overrun skips.
+- **The lateness tolerance is load-bearing in both directions, and it is
+  narrow.** The audio ring throttle in `InfoNES_SoundOutput()` is the real
+  master clock — it holds core0 until the DAC has drained — so the frame rate
+  is *DAC rate / 367.5*: exactly 60.000 fps at 22050 Hz, 49.93 at 18350.
+  Neither matches the 60.0988 / 50.007 Hz the period is derived from, so
+  **every frame ends ~30 µs late**.
+    - Too tight (a knife edge) and that reads as "behind" forever: every frame
+      skipped, **picture frozen while emulation and sound run on perfectly**,
+      until the 100 ms resync a minute later lets one frame through.
+    - Too loose and it swallows real overruns: at an eighth of a period, a
+      22 ms drawn frame is only 2.0 ms late in PAL, so **nothing ever skipped**,
+      the emulator ran at 45 fps against the 49.93 the DAC wanted, and the sound
+      went slow and broke up.
+    - A 64th (260 µs NTSC, 312 µs PAL) clears the ~30 µs drift and the ~100 µs
+      of jitter from the throttle's `sleep_us(100)`, while leaving every real
+      overrun outside. Small lateness re-bases the deadline on real time.
+      Skipping too eagerly costs smoothness; skipping too reluctantly costs the
+      game its speed and its audio.
 - **The drop parity rotates.** Strict alternation puts every drawn frame on one
   parity, so a sprite that flickers every frame — Mario's invincibility after a
   hit — can land entirely on the dropped frames and vanish until something

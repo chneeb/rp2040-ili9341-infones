@@ -1059,10 +1059,20 @@ static void __not_in_flash_func(speed_control)(void)
       while ((int64_t)(time_us_64() - deadline) < 0) tight_loop_contents();
       draw_this_frame = true;
   }
-  else if (late < (int64_t)(nes_frame_period_us / 8))
+  else if (late < (int64_t)(nes_frame_period_us / 64))
   {
       /* Barely late: this is drift, not an overrun, and it must NOT be
        * treated as "behind" — doing so froze the picture entirely.
+       *
+       * A 64th of a period (260 us NTSC, 312 us PAL) is deliberately tight.
+       * The drift being absorbed is ~30 us, plus up to 100 us of jitter from
+       * the throttle's sleep_us(100) granularity. Size this generously
+       * instead — an eighth of a period was the first attempt — and it
+       * swallows real overruns too: a 22 ms drawn frame is 2.0 ms late in PAL,
+       * inside an eighth, so nothing ever skipped, the emulator ran at 45 fps
+       * against the 49.93 the DAC wanted, and the sound went slow and broke
+       * up. Skipping too eagerly costs smoothness; skipping too reluctantly
+       * costs the game its speed and its audio.
        *
        * The audio ring throttle in InfoNES_SoundOutput() is the real master
        * clock: it holds core0 until the DAC has drained, so the frame rate is
