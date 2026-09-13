@@ -186,7 +186,7 @@ struct AudioRingBuffer {
         }
     }
 
-    int check_initialized() {
+    int __not_in_flash_func(check_initialized)() {
         if (!initialized) init();
         return 0;
     }
@@ -228,7 +228,8 @@ struct AudioRingBuffer {
         spin_unlock(lock, saved_irq);
     }
 
-    int read(uint8_t* dest, int max_len) {
+    /* Called from core1, which must not touch flash while core0 writes it. */
+    int __not_in_flash_func(read)(uint8_t* dest, int max_len) {
         check_initialized();
         uint32_t saved_irq = spin_lock_blocking(lock);
         
@@ -404,8 +405,12 @@ void saveNVRAM()
             auto ofs = addr - XIP_BASE;
             printf("write flash %x\n", ofs);
             {
+                Frens::flash_lockout_start();
+                uint32_t ints = save_and_disable_interrupts();
                 flash_range_erase(ofs, SRAM_SIZE);
                 flash_range_program(ofs, SRAM, SRAM_SIZE);
+                restore_interrupts(ints);
+                Frens::flash_lockout_end();
             }
          } //});
     printf("done\n");

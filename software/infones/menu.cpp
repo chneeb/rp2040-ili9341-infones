@@ -650,14 +650,19 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                                             break;
                                         }
                                         printf("Flashing %d bytes to flash address %x\n", bytesRead, ofs);
-                                        printf("  -> Erasing...");
 
-                                        // Disable interupts, erase, flash and enable interrupts
+                                        // Park core1 (it runs from flash), disable
+                                        // interrupts, erase, flash, and undo both.
+                                        printf("  -> lockout...");
+                                        Frens::flash_lockout_start();
+                                        printf("erase...");
                                         uint32_t ints = save_and_disable_interrupts();
                                         flash_range_erase(ofs, bufsize);
-                                        printf("\n  -> Flashing...");
                                         flash_range_program(ofs, buffer, bufsize);
                                         restore_interrupts(ints);
+                                        printf("program...");
+                                        Frens::flash_lockout_end();
+                                        printf("done\n");
                                         //
                                         
                                         printf("\n");
