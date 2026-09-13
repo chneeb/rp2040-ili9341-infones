@@ -211,8 +211,6 @@ const uint LED_PIN = PICO_DEFAULT_LED_PIN;
 #else
 #define SCANLINE_BUF_WORDS 256
 #endif
-WORD scanline_buf_internal_1[SCANLINE_BUF_WORDS];
-WORD scanline_buf_internal_2[SCANLINE_BUF_WORDS];
 
 /* One whole frame, handed to the panel in a single DMA.
  *
@@ -226,7 +224,11 @@ WORD scanline_buf_internal_2[SCANLINE_BUF_WORDS];
  *
  * With the frame accumulated in RAM there is one transfer per frame: the bus
  * never goes idle, and it runs in the background while the next frame is
- * emulated. 320x232x2 = 145 KB, which the RP2350's 520 KB can afford. */
+ * emulated. 320x232x2 = 145 KB each, which the RP2350's 520 KB can afford.
+ *
+ * One buffer, not two: a second costs 145 KB and there is not that much RAM
+ * left. The tearing a single buffer invites is handled by wait_for_row_sent()
+ * below, which costs nothing. */
 #define NES_DRAWN_LINES (NES_LAST_SCANLINE - NES_FIRST_SCANLINE + 1)
 static WORD frame_buf[DISPLAY_WIDTH * NES_DRAWN_LINES];
 
@@ -235,7 +237,32 @@ static inline WORD *frame_row(int line)
 {
     return frame_buf + (size_t)(line - NES_FIRST_SCANLINE) * DISPLAY_WIDTH;
 }
-WORD scanline_buf_outgoing[SCANLINE_BUF_WORDS];
+
+static int display_dma_channel;
+
+/* Hold the emulator off a row the transfer has not reached yet.
+ *
+ * With one buffer the next frame is rendered into the same memory the current
+ * one is being sent from. A row takes 68 us to send and about 64 us to
+ * emulate, so the emulator gains ~5 us a row: over 232 rows that is 1.1 ms
+ * against the ~1.4 ms head start vblank gives the transfer. The margin is
+ * thinner than the jitter, so now and again the writer overtakes the reader
+ * near the bottom of the screen and part of the new frame appears inside the
+ * old one — the occasional flicker.
+ *
+ * The DMA's read address says exactly where the transfer is, so rather than
+ * buy a second buffer, wait out the overlap when it happens. It is a few
+ * hundred microseconds once in a while, against 145 KB and a rebuild of the
+ * memory map. */
+static inline void __not_in_flash_func(wait_for_row_sent)(const WORD *row)
+{
+    const uint8_t *row_end = (const uint8_t *)(row + DISPLAY_WIDTH);
+    while (dma_channel_is_busy(display_dma_channel)
+           && (const uint8_t *)dma_hw->ch[display_dma_channel].read_addr < row_end)
+    {
+        tight_loop_contents();
+    }
+}
 // BYTE framebuffer[256*240];
 // uint8_t screen_x;
 // uint8_t screen_x_start;
@@ -248,10 +275,8 @@ int frame_column_step=0;
 // #define FRAME_COLUMN_WIDTH 28
 int FRAME_COLUMN_WIDTH=28;
 // #define AUDIO_BUF_SIZE 735*5
-#define AUDIO_BUF_SIZE 2048
-BYTE snd_buf[AUDIO_BUF_SIZE]={0};
+#define AUDIO_BUF_SIZE 1024
 int buf_residue_size=AUDIO_BUF_SIZE;
-static int display_dma_channel;
 
 #include "hardware/sync.h"
 
@@ -1456,6 +1481,7 @@ void __not_in_flash_func(drawWorkMeter)(int line)
 
 void __not_in_flash_func(RomSelect_PreDrawLine)(int line)
 {
+    wait_for_row_sent(frame_row(line));
     RomSelect_SetLineBuffer(frame_row(line), 256);
 }
 
@@ -1468,6 +1494,10 @@ void __not_in_flash_func(RomSelect_PreDrawLine)(int line)
  */
 void __not_in_flash_func(InfoNES_PreDrawLine)(int line)
 {
+    /* Before InfoNES renders into this row, make sure the frame still going
+     * out has already been read from it. */
+    wait_for_row_sent(frame_row(line));
+
 #if 0
     util::WorkMeterMark(0xaaaa);
     auto b = dvi_->getLineBuffer();

@@ -123,6 +123,20 @@ Button mapping — active low, bytes 6 and 7:
 - **The scheduling policy is now one line**: if the previous frame is still on
   the wire, drop this one. Nothing to tune — the transfer costs no CPU, so
   there is nothing to trade against emulation. It is what the Circle port does.
+- **One buffer, and the emulator is held off rows the transfer has not
+  reached.** The next frame is rendered into the same memory the current one
+  is being sent from. A row takes 68 µs to send and ~64 µs to emulate, so the
+  emulator gains ~5 µs a row — 1.1 ms over 232 rows, against the ~1.4 ms head
+  start vblank gives the transfer. That margin is thinner than the jitter, so
+  occasionally the writer overtakes the reader near the bottom and part of the
+  new frame appears inside the old one, seen as an intermittent flicker.
+  `wait_for_row_sent()` reads the DMA channel's `read_addr` — which says
+  exactly where the transfer is — and spins only while it is still short of the
+  row about to be written. A few hundred µs once in a while, against the 145 KB
+  a second buffer costs. **Double buffering does not fit**: with 338 KB already
+  in use it overflows RAM by 21 KB, and shaving our own buffers only recovered
+  12 KB of that (the rest is the core's own always-allocated mapper RAM —
+  `Map6_Chr_Ram` alone is 32 KB).
 - **Sprite flicker survives.** Mario's post-hit invincibility toggles every
   frame, and a picture at half rate can drop exactly the frames he is drawn on.
   At full rate the question does not arise; the parity-rotation hack the old
