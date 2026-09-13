@@ -845,17 +845,42 @@ static void __not_in_flash_func(blink_led)(void)
 {
     gpio_xor_mask(1<<LED_PIN);
 }
+/* Cleared by speed_control() when the previous frame missed its deadline:
+ * the next frame is emulated in full but never sent to the panel. Read by
+ * InfoNES_PostDrawLine(). */
+volatile bool draw_this_frame = true;
+
 static void __not_in_flash_func(speed_control)(void)
 {
-  static uint64_t last_blink = 0;
+  static uint64_t deadline = 0;
 
 // frame timing control
   uint64_t cur_time = time_us_64();
-  uint64_t diff_time = cur_time - last_blink;
   // 1/60 = 16666 us
-  while (last_blink + (16666) > cur_time) {cur_time = time_us_64();}
-  
-  last_blink = cur_time;
+  if (deadline == 0) deadline = cur_time;
+
+  if ((int64_t)(cur_time - deadline) <= 0)
+  {
+      /* Made the deadline with time to spare — wait it out and draw the next
+       * frame to the panel as usual. */
+      while ((int64_t)(time_us_64() - deadline) < 0) tight_loop_contents();
+      draw_this_frame = true;
+  }
+  else
+  {
+      /* Behind. A drawn frame costs ~14.8 ms of SPI on a 320-wide panel at
+       * 80 MHz, which is most of the 16.6 ms budget, so skipping the transfer
+       * is what buys the time back. Emulation still runs every frame — and
+       * that matters for more than smoothness: the APU generates a fixed 367
+       * samples per emulated frame, so emulating at 45 fps means 16500
+       * samples/s against the 22050/s the DAC consumes, and the soundtrack
+       * plays a quarter too slow with the shortfall padded. */
+      draw_this_frame = false;
+      /* A long stall (ROM load, menu, flash write) must not leave us trying to
+       * catch up for thousands of frames. */
+      if ((int64_t)(cur_time - deadline) > 100000) deadline = cur_time;
+  }
+  deadline += 16666;
 
   // blink_led();
 
@@ -1103,6 +1128,11 @@ void __not_in_flash_func(InfoNES_PreDrawLine)(int line)
 
 void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
 {
+    /* Frame dropped by speed_control(): emulate it, but send nothing. The
+     * in-flight DMA from the last drawn frame is waited for below, on the
+     * first line of the next drawn one. */
+    if (!draw_this_frame) return;
+
 #if 0
 #if !defined(NDEBUG)
     util::WorkMeterMark(0xffff);
