@@ -114,6 +114,13 @@
 
 
 #include "audio.h"
+#include "FrensHelpers.h"
+#ifdef I2S_AUDIO
+#include "i2s_output.h"
+#ifndef I2S_GAIN_PERCENT
+#define I2S_GAIN_PERCENT 150
+#endif
+#endif
 
 
 // Controller pins and type are provided by CMake via HARDWARE_TARGET selection.
@@ -211,6 +218,13 @@ struct AudioRingBuffer {
              buffer[head] = data[i];
              head = (head + 1) % AUDIO_RING_BUFFER_SIZE;
         }
+        spin_unlock(lock, saved_irq);
+    }
+
+    void reset() {
+        check_initialized();
+        uint32_t saved_irq = spin_lock_blocking(lock);
+        head = tail = 0;
         spin_unlock(lock, saved_irq);
     }
 
@@ -726,10 +740,33 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
             uint8_t w4 = *wave4++; // noise
             uint8_t w5 = *wave5++; // DPCM
 
-#ifdef ILI9341
+#if defined(I2S_AUDIO)
+             /* The five channels do NOT share a range: the two pulses and the
+              * triangle are 0..255 (pulse tables hold 0x11 * vol, vol 0..15),
+              * noise is only 0..15 (ApuC4Vol) and DPCM 0..63. Normalise each to
+              * 0..255 before averaging, then saturate — the /4 formula below
+              * reaches 332 on a loud frame and wraps around inside the BYTE,
+              * which is audible as crackle on peaks. */
+             {
+                 int mix = (w1 + w2 + w3 + w4 * 17 + w5 * 4) / 5;
+
+                 /* The APU's signal is UNIPOLAR: silence is 0, not 128, and
+                  * the DC level rides up and down with how many channels are
+                  * sounding. Track that DC with a one-pole filter (shift 7 =
+                  * ~27 Hz corner at 22050) and subtract it, so what reaches the
+                  * DAC is centred on 128 and the gain below is applied to the
+                  * audio rather than to the offset. */
+                 static int32_t dc_acc = 0;    /* mix level, 8.8 fixed point */
+                 dc_acc += (((int32_t)mix << 8) - dc_acc) >> 7;
+                 int ac = mix - (dc_acc >> 8);
+
+                 int v = 128 + (ac * I2S_GAIN_PERCENT) / 100;
+                 if (v < 0) v = 0; else if (v > 255) v = 255;
+                 *p++ = (uint8_t)v;
+             }
+#elif defined(ILI9341)
              *p++ =  (((w1 * 2 + w2 * 2)/2)  + w3 * 1  + w4 * 1 * 4 + w5 * 2 * 4) / 4;
-#endif
-#ifdef ST7789
+#elif defined(ST7789)
              *p++ =  (((w1 * 2 + w2 * 2)/2)  + w3 * 1  + w4 * 1 * 4 + w5 * 2 * 4) * 16;
 #endif
         }
@@ -896,8 +933,117 @@ static void __not_in_flash_func(speed_control)(void)
 
 #if 1
 static BYTE old_frame_skip_counter;
+#ifdef I2S_AUDIO
+#define AUDIO_CORE_START() audio_core_start()
+#define AUDIO_CORE_STOP()  audio_core_stop()
+#else
+#define AUDIO_CORE_START() ((void)0)
+#define AUDIO_CORE_STOP()  ((void)0)
+#endif
+
+/* Set once core1 can be parked by multicore_lockout_start_blocking(). Core0
+ * must not erase or program flash while core1 is running code from XIP — the
+ * bus is unusable during the operation and core1 faults or hangs. The PWM
+ * consumer happened to be entirely RAM-resident and got away with it; the I2S
+ * one calls into the SDK (sleep_us, printf), so it does not. */
+static volatile bool core1_lockout_ready = false;
+
+/* True while core1 is parked, so flash_lockout_end() cannot try to release a
+ * lockout that never took. */
+static bool core1_locked_out = false;
+
+namespace Frens
+{
+    void flash_lockout_start()
+    {
+        core1_locked_out = false;
+        if (!core1_lockout_ready) return;
+        /* Bounded, not blocking: if core1 cannot be parked we want to know
+         * about it on the console instead of hanging here forever. */
+        /* Short timeout on purpose: this is belt-and-braces now that core1's
+         * loop is entirely RAM-resident, and a ROM copy is ~10 flash blocks —
+         * a long timeout per block would add seconds to every load. */
+        core1_locked_out = multicore_lockout_start_timeout_us(5000);
+        if (!core1_locked_out) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                printf("[flash] core1 lockout timed out — relying on core1 being RAM-resident\n");
+            }
+        }
+    }
+    void flash_lockout_end()
+    {
+        if (!core1_locked_out) return;
+        if (!multicore_lockout_end_timeout_us(5000)) printf("[flash] core1 release TIMED OUT\n");
+        core1_locked_out = false;
+    }
+}
+
+#ifdef I2S_AUDIO
+extern uint32_t FrameCounter;   /* defined below; core0 bumps it per frame */
+void core1_main();
+
+/* core1 (the audio consumer) runs only while a game is running.
+ *
+ * The menu has no sound to play, and it is the menu that copies the selected
+ * ROM into flash — with core1 stopped there is simply no second core to fall
+ * over when XIP goes away, instead of a lockout handshake to get right. Saves
+ * also write flash mid-game, so core1 stays RAM-resident regardless. */
+static bool audio_core_running = false;
+
+static void audio_core_start()
+{
+    if (audio_core_running) return;
+    audioRing.reset();            /* drop whatever the last game left behind */
+    multicore_launch_core1(core1_main);
+    audio_core_running = true;
+}
+
+static void audio_core_stop()
+{
+    if (!audio_core_running) return;
+    multicore_reset_core1();
+    /* Only now: while core1 was alive the two DMA channels were chained to each
+     * other, and they would happily keep replaying the last two buffers. */
+    i2s_output_stop();
+    audio_core_running = false;
+    core1_lockout_ready = false;
+}
+/* Source for the I2S ping-pong buffers: the same ring the PWM path drains. */
+static int __not_in_flash_func(i2s_pull)(uint8_t *dst, int count)
+{
+    return audioRing.read(dst, count);
+}
+#endif
+
 void __not_in_flash_func(core1_main)()
 {
+    multicore_lockout_victim_init();
+    core1_lockout_ready = true;
+#ifdef I2S_AUDIO
+    /* External I2S DAC (PIO + DMA). i2s_output_pump() refills whichever
+     * ping-pong buffer just drained; a shortfall is padded inside.
+     *
+     * Do NOT spin on the pump: a buffer lasts ~11.6 ms, so polling every 500 us
+     * is 20x more often than needed, while a tight loop hammers the DMA
+     * registers over the bus and steals bandwidth from core0's emulation and
+     * from the display DMA. */
+    i2s_output_init(22050, i2s_pull);
+
+    /* Nothing in this loop may call into flash: core0 erases and programs
+     * flash (ROM copy, SRAM saves) with XIP down, and the multicore lockout
+     * that is supposed to park core1 for that is not completing on this board.
+     * So the delay polls the timer register directly instead of sleep_us(),
+     * i2s_pull/audioRing::read are __not_in_flash_func, and the once-a-second
+     * I2S_DEBUG report is printed by core0 in InfoNES_LoadFrame() rather than
+     * here — printf is the one thing that would otherwise reach flash. */
+    while (true) {
+        i2s_output_pump();
+        uint32_t t0 = timer_hw->timerawl;
+        while (timer_hw->timerawl - t0 < 500) tight_loop_contents();
+    }
+#else
     audio_init(AUDIO_PIN, 22050);
 
     while (true) {
@@ -909,6 +1055,7 @@ void __not_in_flash_func(core1_main)()
             memset(buf + n, 128, AUDIO_BUFFER_SIZE - n);
         }
     }
+#endif
 }
 
 #endif
@@ -1048,6 +1195,30 @@ int __not_in_flash_func(InfoNES_LoadFrame)()
 
 
 
+#ifdef I2S_DEBUG
+    /* Once a second: is the consumer too fast, or the producer too slow?
+     *   buf/s  — I2S buffers played; nominal is 22050/256 = 86
+     *   short  — samples padded because the audio ring ran dry
+     *   fps    — emulated frames; 60 means the APU made its 22050/s
+     * Printed here, on core0, because core1 must stay clear of flash. */
+    {
+        static uint64_t next_report = 0;
+        static uint32_t last_frames = 0;
+        uint64_t now = time_us_64();
+        if (now >= next_report) {
+            if (next_report != 0) {
+                uint32_t bufs, shortfall;
+                i2s_output_get_stats(&bufs, &shortfall);
+                printf("i2s: %lu buf/s (%lu samples/s), %lu short, emu %lu fps\n",
+                       (unsigned long)bufs, (unsigned long)bufs * 256,
+                       (unsigned long)shortfall,
+                       (unsigned long)(FrameCounter - last_frames));
+            }
+            next_report = now + 1000000;
+            last_frames = FrameCounter;
+        }
+    }
+#endif
     return FrameCounter++;
 }
 #if 0
@@ -1699,7 +1870,10 @@ int main()
     // 空サンプル詰めとく
     dvi_->getAudioRingBuffer().advanceWritePointer(255);
 #endif
-#ifndef DISABLE_AUDIO
+#if !defined(DISABLE_AUDIO) && !defined(I2S_AUDIO)
+    /* PWM audio keeps core1 for the whole run: audio_init() claims a DMA
+     * channel and an IRQ handler, so it is not written to be re-entered.
+     * I2S starts core1 per game instead — see audio_core_start(). */
     multicore_launch_core1(core1_main);
 #endif
 
@@ -1759,7 +1933,9 @@ int main()
             // try ROM if fatal error
             if(isFatalError){
                 romSelector_.init(NES_FILE_ADDR);
+                AUDIO_CORE_START();
                 InfoNES_Main();
+                AUDIO_CORE_STOP();
                 /* InfoNES_Main returns when the player quits or switches ROM
                  * via SELECT+LEFT/RIGHT (romSelector_ has already advanced
                  * selectedIndex_). Loop back to run the next ROM rather than
@@ -1771,7 +1947,9 @@ int main()
         }
         printf("Now playing: %s\n", selectedRom);
         romSelector_.init(NES_FILE_ADDR);
+        AUDIO_CORE_START();
         InfoNES_Main();
+        AUDIO_CORE_STOP();
         selectedRom[0] = 0;
     }
 

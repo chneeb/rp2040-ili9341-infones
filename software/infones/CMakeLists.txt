@@ -34,7 +34,7 @@ if (HARDWARE_TARGET STREQUAL "GAMEPI20")
 endif()
 add_subdirectory(drivers/sdcard)
 
-add_executable(infoNES InfoNES.cpp K6502.cpp InfoNES_Mapper.cpp InfoNES_pAPU.cpp tar.cpp audio.c menu.cpp RomLister.cpp FrensHelpers.cpp main.cpp )
+add_executable(infoNES InfoNES.cpp K6502.cpp InfoNES_Mapper.cpp InfoNES_pAPU.cpp tar.cpp audio.c i2s_output.c menu.cpp RomLister.cpp FrensHelpers.cpp main.cpp )
 
 pico_set_program_name(infoNES "infoNES")
 pico_set_program_version(infoNES "0.1")
@@ -98,9 +98,17 @@ elseif(HARDWARE_TARGET STREQUAL "PICO_RESTOUCH")
     set(NES_FIRST_SCANLINE "4")
     set(NES_LAST_SCANLINE "235")
     set(CONTROLLER_TYPE "NUNCHUCK")
-    set(NUNCHUCK_I2C_BUS "i2c1")
-    set(NUNCHUCK_SDA "26")
-    set(NUNCHUCK_SCL "27")
+    # Nunchuck moved off i2c1/GP26-27 to i2c0/GP4-5: the Pico Audio I2S shield
+    # takes GP26/27/28 (DIN/BCK/LRCK). Set AUDIO_OUTPUT to PWM below and the
+    # old i2c1 pins are free again.
+    set(NUNCHUCK_I2C_BUS "i2c0")
+    set(NUNCHUCK_SDA "4")
+    set(NUNCHUCK_SCL "5")
+    # Waveshare Pico Audio shield (external I2S DAC) instead of PWM audio.
+    set(AUDIO_OUTPUT "I2S")
+    set(I2S_DATA_PIN "26")        # DIN
+    set(I2S_CLOCK_PIN_BASE "27")  # BCK=27, LRCK=28 (must be consecutive)
+    set(I2S_GAIN_PERCENT "150")   # output gain after DC removal; saturates
 
 elseif(HARDWARE_TARGET STREQUAL "WAVESHARE_LCD13")
     # RP2350 + ST7789 240x240 — spi1 LCD only (no SD slot, no touch), GPIO buttons + joystick
@@ -206,12 +214,37 @@ message("SD card SPI/CS      : ${SD_SPI} / ${SD_CS}")
 message("Touch CS            : ${TOUCH_CS}")
 message("CPU freq (kHz)      : ${CPU_FREQ_KHZ}")
 message("Controller          : ${CONTROLLER_TYPE}")
-message("Audio PWM pin       : GP${AUDIO_PIN}")
 
 # Default audio PWM output pin for targets that don't override AUDIO_PIN.
 # GP7 was the historical hardcoded value; preserve it for existing targets.
 if(NOT DEFINED AUDIO_PIN)
     set(AUDIO_PIN "7")
+endif()
+
+# Audio sink: PWM on AUDIO_PIN (default) or an external I2S DAC on
+# I2S_DATA_PIN + I2S_CLOCK_PIN_BASE/+1. Both are fed by the same audio ring;
+# only the consumer running on core1 differs.
+if(NOT DEFINED AUDIO_OUTPUT)
+    set(AUDIO_OUTPUT "PWM")
+endif()
+if(AUDIO_OUTPUT STREQUAL "I2S")
+    math(EXPR I2S_LRCK_PIN "${I2S_CLOCK_PIN_BASE} + 1")
+    message("Audio               : I2S DAC  DIN=GP${I2S_DATA_PIN} BCK=GP${I2S_CLOCK_PIN_BASE} LRCK=GP${I2S_LRCK_PIN}")
+    if(NOT DEFINED I2S_GAIN_PERCENT)
+        set(I2S_GAIN_PERCENT "150")
+    endif()
+    target_compile_definitions(infoNES PRIVATE
+        I2S_AUDIO
+        I2S_DATA_PIN=${I2S_DATA_PIN}
+        I2S_CLOCK_PIN_BASE=${I2S_CLOCK_PIN_BASE}
+        I2S_GAIN_PERCENT=${I2S_GAIN_PERCENT}
+    )
+    if(I2S_DEBUG)
+        target_compile_definitions(infoNES PRIVATE I2S_DEBUG)
+        message("                      + once-a-second rate report on stdio")
+    endif()
+else()
+    message("Audio               : PWM on GP${AUDIO_PIN}")
 endif()
 
 target_compile_definitions(infoNES PRIVATE
@@ -316,6 +349,10 @@ target_link_libraries(infoNES
     sdcard
     fatfs        
         )
+
+# I2S output's PIO program (audio_i2s.pio -> audio_i2s.pio.h). Generated for
+# every target; only compiled into the binary when AUDIO_OUTPUT is I2S.
+pico_generate_pio_header(infoNES ${CMAKE_CURRENT_LIST_DIR}/audio_i2s.pio)
 
 pico_add_extra_outputs(infoNES)
 
