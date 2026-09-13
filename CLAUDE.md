@@ -480,8 +480,11 @@ approximation does not hold over DPCM's range and the real mixer compresses
 it). Noise at x17 — the value that merely makes it as loud as a pulse at the
 same volume setting — is ~50% hotter than the chip, and is heard as **brushy
 percussion** sitting on top of the music. Each weight is overridable per build
-(`-DAPU_MIX_NOISE=<n>`) for tuning by ear; the full-scale constant derives
-from them, so the level stays put whatever they are set to.
+(`cmake .. -DAPU_MIX_NOISE=<n>`, forwarded to the compiler by the foreach in
+CMakeLists.txt — a `#ifndef` default in the C code is not enough on its own,
+cmake will take the -D, pass it to nobody and warn that it went unused) for
+tuning by ear; the full-scale constant derives from the weights, so the level
+stays put whatever they are set to. `-U<name>` returns one to its default.
 
 Two things this cannot fix, worth not chasing: the mix is **linear** where the
 chip's is compressive, so loud multi-channel passages sum harder than they
