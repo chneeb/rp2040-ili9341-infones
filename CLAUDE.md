@@ -104,42 +104,45 @@ Button mapping — active low, bytes 6 and 7:
 
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` paces frames at `nes_frame_period_us` — 16639 µs, NTSC's 60.0988 Hz, not the flat 16666 it used to use (waits if the frame finishes early). See [Region](#region-ntsc-and-pal) for the PAL value.
-- **Adaptive display frame skip**: when a frame misses its deadline by more
-  than an eighth of a period, `speed_control()` clears `draw_this_frame` and
-  `InfoNES_PostDrawLine()` returns immediately for the whole next frame —
-  emulated in full, never sent to the panel. A drawn 320-wide frame costs
-  ~14.8 ms of SPI at 80 MHz, most of the budget, so dropping the transfer is
-  what buys the time back; the picture alternates while the game keeps 60 fps.
-- **This is an audio correctness issue, not just smoothness.** The APU generates
-  a fixed 367.5 samples per *emulated* frame, so emulating at 45 fps yields
-  16500 samples/s against the 22050/s the DAC consumes — the soundtrack plays a
-  quarter too slow with the shortfall padded. Measured on PICO_RESTOUCH before
-  the skip: 45–46 fps, 5300 samples/s short.
-- **The lateness tolerance is load-bearing in both directions, and it is
-  narrow.** The audio ring throttle in `InfoNES_SoundOutput()` is the real
-  master clock — it holds core0 until the DAC has drained — so the frame rate
-  is *DAC rate / 367.5*: exactly 60.000 fps at 22050 Hz, 49.93 at 18350.
-  Neither matches the 60.0988 / 50.007 Hz the period is derived from, so
-  **every frame ends ~30 µs late**.
-    - Too tight (a knife edge) and that reads as "behind" forever: every frame
-      skipped, **picture frozen while emulation and sound run on perfectly**,
-      until the 100 ms resync a minute later lets one frame through.
-    - Too loose and it swallows real overruns: at an eighth of a period, a
-      22 ms drawn frame is only 2.0 ms late in PAL, so **nothing ever skipped**,
-      the emulator ran at 45 fps against the 49.93 the DAC wanted, and the sound
-      went slow and broke up.
-    - A 64th (260 µs NTSC, 312 µs PAL) clears the ~30 µs drift and the ~100 µs
-      of jitter from the throttle's `sleep_us(100)`, while leaving every real
-      overrun outside. Small lateness re-bases the deadline on real time.
-      Skipping too eagerly costs smoothness; skipping too reluctantly costs the
-      game its speed and its audio.
-- **The drop parity rotates.** Strict alternation puts every drawn frame on one
-  parity, so a sprite that flickers every frame — Mario's invincibility after a
-  hit — can land entirely on the dropped frames and vanish until something
-  perturbs the timing. After 4 draws in skip mode one extra frame is dropped,
-  inverting the parity; the worst case becomes a ~4 Hz blink.
-- A deadline more than 100 ms stale (ROM load, menu, flash write) resyncs rather
-  than trying to catch up over thousands of frames.
+- **Display frames are dropped on the audio queue's level, not on a clock.**
+  `speed_control()` sets `draw_this_frame` from `audioRing.readable_size()`
+  against `AUDIO_LOW_WATER_SAMPLES`, and `InfoNES_PostDrawLine()` returns
+  immediately for a whole dropped frame — emulated in full, never sent to the
+  panel. A drawn 320-wide frame costs ~14.8 ms of SPI at 80 MHz, most of the
+  budget, so dropping the transfer hands that time straight back to emulation.
+- **Why the queue and not the frame deadline.** The APU generates a fixed 367.5
+  samples per *emulated* frame, so if emulation falls behind, the sound goes
+  slow and the gap is padded — the real cost of an overrun is audible, not
+  visual. The queue measures exactly that, and closes the loop: drawing drains
+  it, dropping refills it, and if drawing every frame is affordable the
+  throttle holds it at its target and nothing is ever dropped.
+- **Two attempts to infer it from a clock failed, in opposite directions**, and
+  are worth not repeating. The audio ring throttle in `InfoNES_SoundOutput()`
+  is the real master clock: it holds core0 until the DAC has drained, so the
+  frame rate is *DAC rate / 367.5* — 60.000 fps at 22050 Hz, 49.93 at 18350 —
+  and **every frame ends ~30 µs late** against the 60.0988 / 50.007 Hz the
+  period is derived from.
+    - A knife-edge "late means behind" test read that as behind for ever:
+      every frame dropped, **picture frozen while emulation and sound ran on
+      perfectly**.
+    - An eighth-of-a-period tolerance swallowed real overruns too — a 22 ms
+      drawn frame is only 2.0 ms late in PAL — so **nothing was ever dropped**,
+      45 fps against the 49.93 the DAC wanted, sound slow and breaking up.
+    - Tightening the tolerance did not help either, and this is the part that
+      kills the whole approach: **a dropped frame does not finish early.** The
+      throttle paces it to the DAC just the same; it only parks core0 in the
+      throttle instead of the DMA wait. So an accumulated offset can never be
+      worked off, and a deadline that remembers one is late for ever.
+  `speed_control()` therefore still caps the rate (that is what paces the menu
+  and `DISABLE_AUDIO` targets) but **never carries lateness forward** — it
+  re-bases on real time instead.
+- **The drop parity rotates.** Sustained dropping settles into an alternation,
+  so every drawn frame is of one parity, and a sprite that flickers every frame
+  — Mario's invincibility after a hit — can land entirely on the dropped ones
+  and vanish until something perturbs the timing. After 4 draws one extra frame
+  is dropped, inverting the parity; the worst case becomes a ~4 Hz blink.
+- **A frame is drawn at least every 8**, whatever the queue says, so a picture
+  that stops entirely is impossible rather than merely unlikely.
 
 ### Region (NTSC and PAL)
 

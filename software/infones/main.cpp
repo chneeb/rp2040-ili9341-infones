@@ -1040,76 +1040,75 @@ static void applyRegionTiming(const uint8_t *rom)
  * InfoNES_PostDrawLine(). */
 volatile bool draw_this_frame = true;
 
+/* Whether a game is running, as opposed to the menu: only then is the audio
+ * ring being fed, and only then can its level be used for pacing. */
+volatile bool emulator_running = false;
+
+/* Below this many samples queued, the emulator is not keeping up with the DAC
+ * and the display transfer is what has to give. Half the throttle's target,
+ * so ~2 frames of audio in hand, on top of the DAC's own 512-sample
+ * ping-pong. */
+#define AUDIO_LOW_WATER_SAMPLES (TARGET_LATENCY_SAMPLES / 2)
+
 static void __not_in_flash_func(speed_control)(void)
 {
   static uint64_t deadline = 0;
-  static int skip_run = 0;    /* how firmly we are in skip-every-other mode */
-  static int drawn_run = 0;   /* drawn frames since the last parity flip */
+  static int skip_run = 0;          /* how firmly we are in skip mode      */
+  static int drawn_run = 0;         /* draws since the last parity flip    */
+  static int frames_since_draw = 0; /* safety net, see below               */
 
 // frame timing control
   uint64_t cur_time = time_us_64();
   if (deadline == 0) deadline = cur_time;
 
-  int64_t late = (int64_t)(cur_time - deadline);
-
-  if (late <= 0)
+  /* Rate cap. This is what paces the menu and DISABLE_AUDIO targets; during
+   * play the audio ring throttle in InfoNES_SoundOutput() is the real clock
+   * and this rarely has to wait.
+   *
+   * Lateness is never carried forward. The throttle paces every frame to the
+   * DAC whether it was drawn or dropped — a dropped frame does not finish
+   * early, it just parks core0 in the throttle instead of in the DMA wait —
+   * so an accumulated offset can never be worked off, and a deadline that
+   * remembers one is a deadline that is late for ever. */
+  if ((int64_t)(cur_time - deadline) <= 0)
   {
-      /* Made the deadline with time to spare — wait it out and draw the next
-       * frame to the panel as usual. */
       while ((int64_t)(time_us_64() - deadline) < 0) tight_loop_contents();
-      draw_this_frame = true;
-  }
-  else if (late < (int64_t)(nes_frame_period_us / 64))
-  {
-      /* Barely late: this is drift, not an overrun, and it must NOT be
-       * treated as "behind" — doing so froze the picture entirely.
-       *
-       * A 64th of a period (260 us NTSC, 312 us PAL) is deliberately tight.
-       * The drift being absorbed is ~30 us, plus up to 100 us of jitter from
-       * the throttle's sleep_us(100) granularity. Size this generously
-       * instead — an eighth of a period was the first attempt — and it
-       * swallows real overruns too: a 22 ms drawn frame is 2.0 ms late in PAL,
-       * inside an eighth, so nothing ever skipped, the emulator ran at 45 fps
-       * against the 49.93 the DAC wanted, and the sound went slow and broke
-       * up. Skipping too eagerly costs smoothness; skipping too reluctantly
-       * costs the game its speed and its audio.
-       *
-       * The audio ring throttle in InfoNES_SoundOutput() is the real master
-       * clock: it holds core0 until the DAC has drained, so the frame rate is
-       * DAC rate / 367.5 samples per frame, i.e. exactly 60.000 fps at 22050
-       * and 49.93 at 18350. Neither equals the 60.0988 / 50.007 Hz the period
-       * is set from, so every single frame ends ~30 us late. With a knife-edge
-       * test that is "behind" forever: every frame skipped, picture frozen,
-       * emulation and sound running on perfectly — until the 100 ms resync a
-       * minute later lets exactly one frame through.
-       *
-       * So absorb small lateness by re-basing on the real time instead. */
-      draw_this_frame = true;
-      deadline = cur_time;
   }
   else
   {
-      /* Genuinely behind. A drawn frame costs ~14.8 ms of SPI on a 320-wide
-       * panel at 80 MHz, which is most of the 16.6 ms budget, so skipping the
-       * transfer is what buys the time back. Emulation still runs every frame
-       * — and that matters for more than smoothness: the APU generates a fixed
-       * 367 samples per emulated frame, so emulating at 45 fps means 16500
-       * samples/s against the 22050/s the DAC consumes, and the soundtrack
-       * plays a quarter too slow with the shortfall padded. */
-      draw_this_frame = false;
-      /* A long stall (ROM load, menu, flash write) must not leave us trying to
-       * catch up for thousands of frames. */
-      if (late > 100000) deadline = cur_time;
+      deadline = cur_time;
   }
+  deadline += nes_frame_period_us;
+
+  /* Draw or drop this frame.
+   *
+   * The question is only ever "is the emulator keeping up with the DAC", so
+   * ask the ring directly instead of inferring it from a clock. Two attempts
+   * at inferring it both failed, in opposite directions: a knife-edge test
+   * skipped every frame for ever (frozen picture, perfect sound), and a
+   * generous tolerance skipped none (45 fps, sound slow and breaking up).
+   *
+   * The ring closes the loop. Drawing costs ~14.8 ms of the budget, so if it
+   * is unaffordable the queue drains, and dropping a frame hands that time
+   * straight back to emulation, which refills it. If drawing every frame is
+   * affordable the throttle holds the queue at its target and nothing is ever
+   * dropped. No accumulating state, and it self-corrects however long a stall
+   * lasts. */
+#if defined(DISABLE_AUDIO)
+  draw_this_frame = true;           /* no audio to starve, nothing to trade */
+#else
+  draw_this_frame = !emulator_running
+                    || audioRing.readable_size() >= AUDIO_LOW_WATER_SAMPLES;
+#endif
 
   /* Rotate which frames get dropped.
    *
-   * Bandwidth-limited play settles into a strict draw/skip alternation, so the
-   * drawn frames are all of one parity. A sprite that flickers every frame —
-   * Mario's invincibility after a hit — then lands entirely on the frames we
-   * drop and is simply invisible until something perturbs the timing. Every
-   * few draws, skip one extra frame: that inverts the parity, so the worst
-   * case is a sprite that blinks at ~4 Hz instead of vanishing. */
+   * Sustained dropping settles into an alternation, so the drawn frames are
+   * all of one parity. A sprite that flickers every frame — Mario's
+   * invincibility after a hit — then lands entirely on the dropped frames and
+   * is simply invisible until something perturbs the timing. Every few draws,
+   * drop one extra frame: that inverts the parity, so the worst case is a
+   * sprite that blinks at ~4 Hz rather than vanishing. */
   if (draw_this_frame)
   {
       if (skip_run >= 2 && ++drawn_run >= 4)
@@ -1125,7 +1124,18 @@ static void __not_in_flash_func(speed_control)(void)
       if (skip_run < 8) skip_run++;
   }
 
-  deadline += nes_frame_period_us;
+  /* Safety net: whatever else is going on, show something. If the emulator is
+   * so far behind that the queue never recovers, the picture would otherwise
+   * stop entirely — which is precisely the failure this has already produced
+   * twice, and it is worth one frame in eight to make it impossible. */
+  if (!draw_this_frame && ++frames_since_draw >= 8)
+  {
+      draw_this_frame = true;
+  }
+  if (draw_this_frame)
+  {
+      frames_since_draw = 0;
+  }
 
   // blink_led();
 
@@ -2143,7 +2153,9 @@ int main()
                 romSelector_.init(NES_FILE_ADDR);
                 applyRegionTiming(romSelector_.getCurrentROM());
                 AUDIO_CORE_START();
+                emulator_running = true;
                 InfoNES_Main();
+                emulator_running = false;
                 AUDIO_CORE_STOP();
                 applyRegionTiming(nullptr);   /* menu runs at NTSC pacing */
                 /* InfoNES_Main returns when the player quits or switches ROM
@@ -2159,7 +2171,9 @@ int main()
         romSelector_.init(NES_FILE_ADDR);
         applyRegionTiming(romSelector_.getCurrentROM());
         AUDIO_CORE_START();
+        emulator_running = true;
         InfoNES_Main();
+        emulator_running = false;
         AUDIO_CORE_STOP();
         applyRegionTiming(nullptr);   /* menu runs at NTSC pacing */
         selectedRom[0] = 0;
