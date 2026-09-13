@@ -33,21 +33,21 @@ static volatile uint32_t stat_buffers, stat_shortfall;
 static uint32_t buf_a[I2S_NSAMPLES] __attribute__((aligned(I2S_NSAMPLES * 4)));
 static uint32_t buf_b[I2S_NSAMPLES] __attribute__((aligned(I2S_NSAMPLES * 4)));
 
-/* Pull mono 8-bit unsigned samples from the source and expand to signed 16-bit
- * in both I2S channels. A shortfall (the ring ran dry) holds the last sample
- * rather than jumping to the mid-point — a step to silence and back is a click
- * at the buffer rate, which is the loudest part of an underrun. */
+/* Pull mono signed 16-bit samples from the source and duplicate each into both
+ * I2S channels. A shortfall (the ring ran dry) holds the last sample rather
+ * than jumping to silence — a step to silence and back is a click at the
+ * buffer rate, which is the loudest part of an underrun. */
 static void __not_in_flash_func(i2s_fill)(uint32_t *dst)
 {
-    static uint8_t last = 128;
-    uint8_t mono[I2S_NSAMPLES];
+    static int16_t last = 0;
+    int16_t mono[I2S_NSAMPLES];
     int n = fill_cb ? fill_cb(mono, I2S_NSAMPLES) : 0;
     if (n > 0) last = mono[n - 1];
     stat_buffers++;
     stat_shortfall += (uint32_t)(I2S_NSAMPLES - n);
     for (int i = n; i < I2S_NSAMPLES; i++) mono[i] = last;
     for (int i = 0; i < I2S_NSAMPLES; i++) {
-        uint16_t s = (uint16_t)(int16_t)(((int)mono[i] - 128) << 8);
+        uint16_t s = (uint16_t)mono[i];
         dst[i] = ((uint32_t)s << 16) | s;
     }
 }

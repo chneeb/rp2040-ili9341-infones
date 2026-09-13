@@ -169,10 +169,22 @@ static int display_dma_channel;
 
 #include "hardware/sync.h"
 
-#define AUDIO_RING_BUFFER_SIZE 8192 // Increased buffer size
+#define AUDIO_RING_BUFFER_SIZE 8192 // in samples
+
+/* What one sample in the ring is. The PWM path wants what its DMA feeds the
+ * slice's compare register: 8-bit unsigned, 128 = silence. The I2S DAC takes
+ * signed 16-bit, so on that path the whole chain stays 16-bit and the APU mix
+ * is no longer squeezed through a byte on the way out. */
+#ifdef I2S_AUDIO
+typedef int16_t audio_sample_t;
+#define AUDIO_SILENCE 0
+#else
+typedef uint8_t audio_sample_t;
+#define AUDIO_SILENCE 128
+#endif
 
 struct AudioRingBuffer {
-    uint8_t buffer[AUDIO_RING_BUFFER_SIZE];
+    audio_sample_t buffer[AUDIO_RING_BUFFER_SIZE];
     volatile int head = 0;
     volatile int tail = 0;
     spin_lock_t *lock;
@@ -212,7 +224,7 @@ struct AudioRingBuffer {
         return AUDIO_RING_BUFFER_SIZE - (t - h);
     }
 
-    void write(const uint8_t* data, int len) {
+    void write(const audio_sample_t* data, int len) {
         check_initialized();
         uint32_t saved_irq = spin_lock_blocking(lock);
         for(int i=0; i<len; ++i) {
@@ -230,7 +242,7 @@ struct AudioRingBuffer {
     }
 
     /* Called from core1, which must not touch flash while core0 writes it. */
-    int __not_in_flash_func(read)(uint8_t* dest, int max_len) {
+    int __not_in_flash_func(read)(audio_sample_t* dest, int max_len) {
         check_initialized();
         uint32_t saved_irq = spin_lock_blocking(lock);
         
@@ -703,7 +715,10 @@ int __not_in_flash_func(InfoNES_GetSoundBufferSize)()
    return audioRing.writable_size();
 }
 
-#define TARGET_LATENCY_BYTES 1500 // Approx 2 frames of audio at 22050Hz
+#define TARGET_LATENCY_SAMPLES 1500 // Approx 2 frames of audio at 22050Hz
+
+/* Scratch the mix is built in before going to the ring. */
+static audio_sample_t audio_scratch[AUDIO_BUF_SIZE];
 
 /*
  *  call from InfoNES_pAPUHsync
@@ -728,7 +743,7 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
         // Latency Control / Synchronization
         // If the buffer is too full, wait for Core 1 to consume some samples.
         // This throttles Core 0 to match the audio playback speed.
-        while (audioRing.readable_size() > TARGET_LATENCY_BYTES)
+        while (audioRing.readable_size() > TARGET_LATENCY_SAMPLES)
         {
             sleep_us(100); 
         }
@@ -736,7 +751,7 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
         int n = remaining;
         if (n > AUDIO_BUF_SIZE) n = AUDIO_BUF_SIZE;
 
-        auto p = snd_buf;
+        auto p = audio_scratch;
         int ct = n;
         while (ct--)
         {
@@ -749,26 +764,29 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
 #if defined(I2S_AUDIO)
              /* The five channels do NOT share a range: the two pulses and the
               * triangle are 0..255 (pulse tables hold 0x11 * vol, vol 0..15),
-              * noise is only 0..15 (ApuC4Vol) and DPCM 0..63. Normalise each to
-              * 0..255 before averaging, then saturate — the /4 formula below
-              * reaches 332 on a loud frame and wraps around inside the BYTE,
-              * which is audible as crackle on peaks. */
+              * noise is only 0..15 (ApuC4Vol) and DPCM 0..63. Normalise each
+              * to 0..255 and sum, giving 0..1275 — kept at full width rather
+              * than averaged back down to a byte, since the DAC is 16-bit. */
              {
-                 int mix = (w1 + w2 + w3 + w4 * 17 + w5 * 4) / 5;
+                 int sum = w1 + w2 + w3 + w4 * 17 + w5 * 4;
 
-                 /* The APU's signal is UNIPOLAR: silence is 0, not 128, and
-                  * the DC level rides up and down with how many channels are
-                  * sounding. Track that DC with a one-pole filter (shift 7 =
-                  * ~27 Hz corner at 22050) and subtract it, so what reaches the
-                  * DAC is centred on 128 and the gain below is applied to the
-                  * audio rather than to the offset. */
-                 static int32_t dc_acc = 0;    /* mix level, 8.8 fixed point */
-                 dc_acc += (((int32_t)mix << 8) - dc_acc) >> 7;
-                 int ac = mix - (dc_acc >> 8);
+                 /* The APU's signal is UNIPOLAR: silence is 0, and the DC level
+                  * rides up and down with how many channels are sounding. Track
+                  * it with a one-pole filter (shift 7 = ~27 Hz corner at 22050)
+                  * and subtract, so the gain applies to the audio rather than
+                  * to the offset — gaining about a fixed mid-point instead
+                  * drives quiet passages into the rail and the output becomes a
+                  * clipped square. */
+                 static int32_t dc_acc = 0;    /* sum level, 24.8 fixed point */
+                 dc_acc += (((int32_t)sum << 8) - dc_acc) >> 7;
+                 int ac = sum - (dc_acc >> 8);
 
-                 int v = 128 + (ac * I2S_GAIN_PERCENT) / 100;
-                 if (v < 0) v = 0; else if (v > 255) v = 255;
-                 *p++ = (uint8_t)v;
+                 /* Full scale (1275) -> 32767 at gain 100, saturating. Same
+                  * loudness as the old 8-bit path at the same gain, with the
+                  * quantisation step 256x smaller. */
+                 int v = (ac * 257 * I2S_GAIN_PERCENT) / 1000;
+                 if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+                 *p++ = (int16_t)v;
              }
 #elif defined(ILI9341)
              *p++ =  (((w1 * 2 + w2 * 2)/2)  + w3 * 1  + w4 * 1 * 4 + w5 * 2 * 4) / 4;
@@ -780,7 +798,7 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
         // Write to RingBuffer, wait if full or just spin? 
         // For now, valid write only what fits or overwrite?
         // simple write
-        audioRing.write(snd_buf, n);
+        audioRing.write(audio_scratch, n);
         
         remaining -= n;
     }
@@ -1072,7 +1090,7 @@ static void audio_core_stop()
     core1_lockout_ready = false;
 }
 /* Source for the I2S ping-pong buffers: the same ring the PWM path drains. */
-static int __not_in_flash_func(i2s_pull)(uint8_t *dst, int count)
+static int __not_in_flash_func(i2s_pull)(int16_t *dst, int count)
 {
     return audioRing.read(dst, count);
 }
@@ -1113,7 +1131,7 @@ void __not_in_flash_func(core1_main)()
 
         int n = audioRing.read(buf, AUDIO_BUFFER_SIZE);
         if (n < AUDIO_BUFFER_SIZE) {
-            memset(buf + n, 128, AUDIO_BUFFER_SIZE - n);
+            memset(buf + n, AUDIO_SILENCE, AUDIO_BUFFER_SIZE - n);
         }
     }
 #endif

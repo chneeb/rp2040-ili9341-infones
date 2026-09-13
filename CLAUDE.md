@@ -432,9 +432,11 @@ Audio: `DISABLE_AUDIO` is currently defined for GAMEPI20 — the PWM audio outpu
 ### Audio output: PWM or I2S
 
 Per target via the `AUDIO_OUTPUT` CMake variable — `PWM` (default) or `I2S`.
-Both sinks are fed by the same 8-bit-unsigned 22050 Hz ring buffer
-(`audioRing` in `main.cpp`, 128 = silence) written by `InfoNES_SoundOutput`;
-only the consumer running on core1 differs. `DISABLE_AUDIO` still overrides
+Both sinks are fed by the same ring buffer (`audioRing` in `main.cpp`) written
+by `InfoNES_SoundOutput`; only the consumer running on core1 differs. **The
+sample type follows the sink** (`audio_sample_t`): 8-bit unsigned with 128 as
+silence for PWM, which is what its DMA feeds the slice's compare register, and
+**signed 16-bit for I2S**, so nothing on that path is squeezed through a byte. `DISABLE_AUDIO` still overrides
 both (core1 is never launched).
 
 - **PWM** (`audio.c`) — one GPIO, `AUDIO_PIN`. Historical default.
@@ -466,8 +468,11 @@ ST7789/PWM branch scales the sum by 16 into a `BYTE`; the ILI9341 `/4` branch
 reaches 332 on a loud frame — both wrap around inside the byte, heard as
 crackle on peaks.
 
-The I2S branch instead normalises each channel to 0..255 before averaging
-(`(w1 + w2 + w3 + w4*17 + w5*4) / 5`) and **saturates** rather than wrapping.
+The I2S branch instead normalises each channel to 0..255 and sums
+(`w1 + w2 + w3 + w4*17 + w5*4`, so 0..1275 — kept at full width rather than
+averaged back into a byte) and **saturates** rather than wrapping. Full scale
+maps to 32767 at gain 100, so the gain means the same as it did on the old
+8-bit path — only the quantisation step is 256x smaller.
 
 **The APU's signal is unipolar — silence is 0, not 128** — and its DC level
 rides up and down with how many channels are sounding. That matters as soon as

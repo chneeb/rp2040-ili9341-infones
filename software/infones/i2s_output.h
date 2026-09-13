@@ -11,9 +11,8 @@
  * Independent of the display: its own PIO state machine and DMA channels, so
  * it never touches the LCD's SPI or DMA channel.
  *
- * Samples are 8-bit unsigned mono, 128 = silence — the same format the PWM
- * path and InfoNES' audioRing already use — converted to signed 16-bit stereo
- * (both channels the same) on the way into the I2S FIFO.
+ * Samples are signed 16-bit mono, the same as InfoNES' audio ring carries on
+ * this path, duplicated into both channels on the way into the I2S FIFO.
  */
 
 #include <stdint.h>
@@ -22,9 +21,9 @@
 extern "C" {
 #endif
 
-/* Fill up to `count` mono 8-bit unsigned samples, return how many were
- * written. The remainder is padded with silence by the caller. */
-typedef int (*i2s_fill_fn)(uint8_t *dst, int count);
+/* Fill up to `count` mono signed 16-bit samples, return how many were
+ * written. Any shortfall is handled by the caller. */
+typedef int (*i2s_fill_fn)(int16_t *dst, int count);
 
 /* Claims the PIO SM and DMA channels on the first call (later calls only
  * restart the stream) and starts playing. */
