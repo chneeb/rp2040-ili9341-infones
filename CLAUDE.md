@@ -55,14 +55,17 @@ the shared sources by relative path, so the two builds coexist in one tree and
 | SD MOSI      | 11   |
 | SD MISO      | 12   |
 | Touch CS     | 16   |
-| Controller SDA | 26 |
-| Controller SCL | 27 |
+| Controller SDA | 4  |
+| Controller SCL | 5  |
+| I2S DIN      | 26   |
+| I2S BCK      | 27   |
+| I2S LRCK     | 28   |
 
 **LCD MISO is -1**: `LCD_MISO = -1` prevents the firmware from configuring GPIO 12 as SPI for the display; the SD card still uses it as MISO.
 
 **Touch CS (GP16) must be driven HIGH at startup**: The XPT2046 touch controller shares spi1 with the LCD and SD card. If GP16 floats low, the XPT2046 responds to all SPI traffic and drives MISO low, causing `wait_ready()` in `disk_initialize()` to time out and SD card init to fail with `FR_NOT_READY`. `main()` drives GP16 HIGH before `display_init()`.
 
-### Input: NES Mini Classic clone (i2c1, addr 0x52)
+### Input: NES Mini Classic clone (i2c0 on GP4/5, addr 0x52)
 Init sequence (order matters):
 ```
 {0xF0, 0x55}
@@ -101,7 +104,19 @@ Button mapping — active low, bytes 6 and 7:
 
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` caps at 60 fps (waits if frame finishes early)
-- No display frame skipping is currently active (all frames DMA'd to display)
+- **Adaptive display frame skip**: when a frame misses its 16666 µs deadline,
+  `speed_control()` clears `draw_this_frame` and `InfoNES_PostDrawLine()` returns
+  immediately for the whole next frame — emulated in full, never sent to the
+  panel. A drawn 320-wide frame costs ~14.8 ms of SPI at 80 MHz, most of the
+  budget, so dropping the transfer is what buys the time back; the picture
+  alternates while the game keeps 60 fps.
+- **This is an audio correctness issue, not just smoothness.** The APU generates
+  a fixed 367 samples per *emulated* frame (`ApuSamplesPerSync16`, per scanline),
+  so emulating at 45 fps yields 16500 samples/s against the 22050/s the DAC
+  consumes — the soundtrack plays a quarter too slow with the shortfall padded.
+  Measured on PICO_RESTOUCH before the skip: 45–46 fps, 5300 samples/s short.
+  A deadline more than 100 ms stale (ROM load, menu, flash write) resyncs rather
+  than trying to catch up over thousands of frames.
 - The 60 fps cap + 80 MHz SPI + 300 MHz RP2350 achieves correct NES game speed; RP2040 at 252 MHz is sufficient but closer to the margin
 
 ### ROM Loading Flow
@@ -111,6 +126,40 @@ Button mapping — active low, bytes 6 and 7:
 4. Otherwise: show the file-browser menu (`menu()`). If `isFatalError` (no SD card), the menu falls through to run the flash ROM.
 5. `menu()` never returns — when a game is selected it writes the path to `/currentloadedrom.txt` and calls `watchdog_reboot()`.
 6. After `InfoNES_Main()` exits (player quit), `selectedRom` is cleared and the menu is shown again.
+
+### Flash writes vs. core1 (CRITICAL)
+
+XIP is unusable while flash is being erased or programmed, so **core1 must not
+be executing from flash** during `flash_range_erase`/`flash_range_program`.
+The symptom when it does is a hang partway through the menu's ROM copy —
+"couldn't load a new ROM". The PWM consumer got away with it by being entirely
+RAM-resident; the I2S one called `sleep_us` and `printf`, which are not.
+
+Three things guard it now, in order of how much they actually carry:
+
+1. **core1 only runs while a game runs** (I2S targets). `audio_core_start()` /
+   `audio_core_stop()` bracket `InfoNES_Main()` in `main()`; the menu — which is
+   what copies the ROM into flash — has no second core at all. `audio_core_stop()`
+   resets core1 **and then** calls `i2s_output_stop()`: the two DMA channels are
+   chained to each other and would otherwise keep replaying the last two buffers
+   forever. `i2s_output_init()` is idempotent (claims the PIO SM and DMA channels
+   once, restarts the stream on later calls) so a game can be started repeatedly.
+   PWM targets keep the old behaviour — core1 launched once at boot — because
+   `audio_init()` claims a DMA channel and an IRQ handler and is not written to be
+   re-entered.
+2. **core1's loop touches no flash.** Saves (`saveNVRAM()`) write flash *during* a
+   game, so this still matters: the delay polls `timer_hw->timerawl` instead of
+   calling `sleep_us()`, `AudioRingBuffer::read` and `i2s_output_get_stats` are
+   `__not_in_flash_func`, and the `I2S_DEBUG` report is printed by core0 from
+   `InfoNES_LoadFrame()`. Verify with `arm-none-eabi-nm`: everything core1 reaches
+   must be at `0x2000xxxx`, not `0x10xxxxxx`.
+3. **The multicore lockout**, via `Frens::flash_lockout_start()`/`flash_lockout_end()`
+   around both flash sites. **It does not currently work on this board** — the
+   handshake times out every time, although core1 is alive, has
+   `multicore_lockout_victim_init()` called at the top of `core1_main`, and nothing
+   else in the tree touches the SIO FIFO or its IRQ. Unexplained; left in with a
+   5 ms timeout and a warn-once message (200 ms × ~10 flash blocks added seconds to
+   every ROM load). Do not rely on it: 1 and 2 are what make flash writes safe.
 
 ### Shared SPI Bus (CRITICAL)
 The SD card and LCD share **the same SPI bus (spi1)** with CLK/MOSI/MISO on GPIO 10/11/12. They use different CS pins (LCD CS=9, SD CS=22). If display CS is LOW while the SD card is accessed, the display receives SD card SPI traffic as pixel data, corrupting the write pointer.
@@ -201,7 +250,8 @@ Set `HARDWARE_TARGET` via `-DHARDWARE_TARGET=...` (or edit the default in CMakeL
 | SD SPI bus | spi1 (separate) | spi1 (shared, same pins) | none | spi1 (shared, separate pins) |
 | SD pins SCK/MOSI/MISO/CS | 10/11/12/13 | 10/11/12/22 | — | 30/31/40/43 (RP2350-PiZero onboard) |
 | Touch CS | none | GP16 | none | none |
-| Controller | none | NES Mini (i2c1, GP26/27) | GPIO buttons+joystick | GPIO buttons+D-pad |
+| Controller | none | NES Mini (i2c0, GP4/5) | GPIO buttons+joystick | GPIO buttons+D-pad |
+| Audio | PWM GP7 | I2S DAC GP26/27/28 | PWM GP7 | disabled (PWM GP18) |
 | CPU clock | from chip (252/300 MHz) | from chip (252/300 MHz) | from chip (252/300 MHz) | from chip (252/300 MHz) |
 | VREG | no | VREG_VOLTAGE_1_20 | VREG_VOLTAGE_1_20 | VREG_VOLTAGE_1_20 |
 | `SHARED_SPI_BUS` | — | ✓ | — | ✓ |
@@ -314,6 +364,69 @@ Unmapped GamePi20 buttons: X (BCM22/GP22), Y (BCM17/GP17), TR (BCM6/GP6). Extend
 
 Audio: `DISABLE_AUDIO` is currently defined for GAMEPI20 — the PWM audio output to GP18 (BCM18, header pin 12 / earphone jack) sounds wrong and is short-circuited until that's diagnosed. With the flag set, `InfoNES_SoundOutput` returns immediately and `multicore_launch_core1` is skipped (no PWM init, core1 stays idle). The pin selection itself is configurable per target via the `AUDIO_PIN` CMake variable (default GP7 preserves prior behaviour for non-GAMEPI20 targets); re-enable later by removing `add_compile_definitions(DISABLE_AUDIO)` from the GAMEPI20 elseif branch in CMakeLists.txt.
 
+### Audio output: PWM or I2S
+
+Per target via the `AUDIO_OUTPUT` CMake variable — `PWM` (default) or `I2S`.
+Both sinks are fed by the same 8-bit-unsigned 22050 Hz ring buffer
+(`audioRing` in `main.cpp`, 128 = silence) written by `InfoNES_SoundOutput`;
+only the consumer running on core1 differs. `DISABLE_AUDIO` still overrides
+both (core1 is never launched).
+
+- **PWM** (`audio.c`) — one GPIO, `AUDIO_PIN`. Historical default.
+- **I2S** (`i2s_output.c` + `audio_i2s.pio`) — external DAC, e.g. the
+  **Waveshare Pico Audio shield** on PICO_RESTOUCH: DIN=GP26, BCK=GP27,
+  LRCK=GP28 (BCK/LRCK must be consecutive; the PIO program side-sets both).
+  Borrowed from the working port in `~/Source/tiny_agi`
+  (`tinyagi-rp2350/audio/`); the PIO program is byte-for-byte the same, the
+  producer was rewired to InfoNES' ring.
+
+**The I2S shield takes GP26/27, which is where the NES Mini nunchuck used to
+sit.** PICO_RESTOUCH therefore moves the controller to **i2c0 on GP4/5**. Going
+back to PWM audio means putting `NUNCHUCK_I2C_BUS`/`SDA`/`SCL` back to
+`i2c1`/26/27 as well.
+
+How the I2S path works: a PIO state machine (pio0, own SM) clocks out 32-bit
+stereo frames at `sysclk/(rate*64)`; two DMA channels chain to each other over
+a pair of 256-sample buffers for a gapless stream, with the read-address ring
+wrapping inside each buffer. `core1_main()` spins on `i2s_output_pump()`, which
+notices a ping-pong swap and refills the buffer that just drained from the
+audio ring, padding any shortfall with silence. Its own PIO SM and DMA
+channels, so it never touches the LCD's SPI or DMA channel.
+
+**The mix formula differs by sink, and the existing ones overflow.** The five
+APU channels do *not* share a range: the two pulses and the triangle are
+0..255 (the pulse tables hold `0x11 * vol`, vol 0..15; `triangle_50` runs
+0x00..0xff), **noise is only 0..15** (`ApuC4Vol`) and **DPCM 0..63**. The
+ST7789/PWM branch scales the sum by 16 into a `BYTE`; the ILI9341 `/4` branch
+reaches 332 on a loud frame — both wrap around inside the byte, heard as
+crackle on peaks.
+
+The I2S branch instead normalises each channel to 0..255 before averaging
+(`(w1 + w2 + w3 + w4*17 + w5*4) / 5`) and **saturates** rather than wrapping.
+
+**The APU's signal is unipolar — silence is 0, not 128** — and its DC level
+rides up and down with how many channels are sounding. That matters as soon as
+any gain is applied: gaining about 128 pushes a quiet passage (which sits near
+0) *further* below the rail, so everything clamps to 0 and the output becomes a
+hard-clipped square — loud and buzzy, which is exactly how the first attempt
+sounded. So the I2S path tracks the DC with a one-pole filter (shift 7, ~27 Hz
+corner at 22050), subtracts it, and applies `I2S_GAIN_PERCENT` (default 150) to
+what is left, centred on 128. `i2s_fill()` then expands the byte to signed
+16-bit in both I2S channels.
+
+`I2S_DEBUG` (a CMake option: `cmake .. -DI2S_DEBUG=1`) prints once a second
+from core1 — `buf/s` and samples/s actually consumed, samples padded, and the
+emulator's fps. That is what separates a consumer running at the wrong rate
+from a producer that cannot keep up; it is how the 45 fps above was found.
+**Do not spin on `i2s_output_pump()`** — a buffer lasts ~11.6 ms, and a tight
+loop hammers the DMA registers over the bus at the expense of core0 and the
+display DMA. core1 polls every 500 µs.
+
+A shortfall in `i2s_fill()` **holds the last sample** rather than padding with
+the mid-point: a step to silence and back is a click at the buffer rate (~86 Hz),
+the loudest part of an underrun. Same trap the Circle port hit with Circle's
+null frame.
+
 ### Waveshare Pico LCD 1.3" button mapping
 
 | NES button | Physical input |
@@ -358,6 +471,9 @@ GAMEPI20 also defines `DISPLAY_INVERT` (sent as `DCS_ENTER_INVERT_MODE`) — the
 | `NUNCHUCK_I2C_BUS` / `NUNCHUCK_SDA` / `NUNCHUCK_SCL` | Nunchuck I2C bus and pins |
 | `BTN_A/B/X/Y` / `JOY_UP/DOWN/LEFT/RIGHT/CTR` | Waveshare button/joystick GPIO pins |
 | `AUDIO_PIN` | PWM audio output GPIO. Per-target; default GP7. GAMEPI20 sets GP18 (earphone jack). |
+| `I2S_AUDIO` | Use the external I2S DAC (PIO+DMA) instead of PWM. Set by `AUDIO_OUTPUT=I2S`. |
+| `I2S_DATA_PIN` / `I2S_CLOCK_PIN_BASE` | I2S DIN, and BCK (=base) / LRCK (=base+1, must be consecutive). |
+| `I2S_GAIN_PERCENT` | I2S output gain applied after DC removal, saturating. Default 150. |
 | `DISABLE_AUDIO` | Short-circuit `InfoNES_SoundOutput` and skip `multicore_launch_core1` — emulator runs silent. Used by GAMEPI20 while the GP18 audio is being investigated. |
 | `FLASHFS_ENABLED` | Compile and link `drivers/flashfs/`; `sdcard.c` dispatches FatFs drive 1 to it. GAMEPI20 only. |
 | `FLASHFS_BASE_ADDR` / `FLASHFS_SIZE_BYTES` | XIP address and byte size of the flash-resident FAT32 image. GAMEPI20: `0x10200000` / 14 MB. |
