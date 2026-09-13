@@ -165,6 +165,25 @@ game start: `Region: P — frame 19997 us, audio 18350 Hz`.
 time raster effects to the longer frame can misbehave. Fixing that means real
 PAL support in the core, which costs the untouched-upstream property.
 
+### The region column in the ROM menu
+
+Each ROM row is prefixed with the letter from its iNES header instead of the
+old `R` (directories keep `D`), read once per file in `RomLister::list()` —
+16 bytes each, after the directory is closed, never while drawing:
+
+| | |
+|---|---|
+| `N` | NTSC |
+| `P` | PAL — paced at 50 Hz, see [Region](#region-ntsc-and-pal) |
+| `M` | multi-region |
+| `D` | Dendy |
+| `?` | iNES 1.0 header: **not known** |
+
+`?` rather than `N` for an unknown region is the whole point of the column:
+most dumps are iNES 1.0, so calling them NTSC would put a confident letter on
+exactly the case worth seeing — a PAL game whose header never admitted it,
+which runs 20% fast with nothing on screen to explain why.
+
 ### ROM Loading Flow
 1. At startup, `initSDCard()` is called if `SDCARD_PIN_SPI0_CS >= 0` (i.e., on targets with an SD slot). `isFatalError` is set to `!initSDCard()`.
 2. On WAVESHARE_LCD13 (no SD slot), `isFatalError = true` always — the flash ROM at `NES_FILE_ADDR` is used directly.

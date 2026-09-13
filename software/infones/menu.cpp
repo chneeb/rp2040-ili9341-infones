@@ -297,7 +297,11 @@ void displayRoms(Frens::RomLister romlister, int startIndex)
             }
             else
             {
-                snprintf(buffer, sizeof(buffer), "R %s", info.Path);
+                // Region letter in place of the old "R" — see NesRegion.h.
+                // '?' is an iNES 1.0 header, i.e. not known rather than NTSC:
+                // a PAL game whose header never admitted it is exactly the
+                // case worth seeing, since it will run 20% fast.
+                snprintf(buffer, sizeof(buffer), "%c %s", info.Region, info.Path);
             }
 
             putText(1, y, buffer, fgcolor, bgcolor);

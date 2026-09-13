@@ -3,6 +3,7 @@
 #include <string.h>
 #include "RomLister.h"
 #include "FrensHelpers.h"
+#include "NesRegion.h"
 
 #include "ff.h"
 
@@ -68,6 +69,7 @@ namespace Frens
 				struct RomEntry romInfo;
 				strcpy(romInfo.Path, file.fname);
 				romInfo.IsDirectory = file.fattrib & AM_DIR;
+				romInfo.Region = ' ';
 				if (!romInfo.IsDirectory && Frens::cstr_endswith(romInfo.Path, ".nes"))
 				{
 					entries[numberOfEntries++] = romInfo;
@@ -87,6 +89,29 @@ namespace Frens
 		}
 		printf("Total entries: %d\n", numberOfEntries);
 		f_closedir(&dir);
+
+		// Region letter for each ROM: 16 bytes per file, read once here so
+		// nothing touches the card while the list is being drawn. Reading it
+		// after the directory is closed keeps one FatFs object open at a time.
+		for (size_t i = 0; i < numberOfEntries; i++)
+		{
+			if (entries[i].IsDirectory)
+			{
+				continue;
+			}
+			entries[i].Region = '?';
+			FIL fil;
+			if (f_open(&fil, entries[i].Path, FA_READ) == FR_OK)
+			{
+				unsigned char header[16];
+				UINT read = 0;
+				if (f_read(&fil, header, sizeof(header), &read) == FR_OK && read == sizeof(header))
+				{
+					entries[i].Region = NesRegionChar(NesRegionFromHeader(header));
+				}
+				f_close(&fil);
+			}
+		}
 		// (bubble) Sort
 		if (numberOfEntries > 1)
 		{

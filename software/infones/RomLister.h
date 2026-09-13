@@ -13,6 +13,10 @@ namespace Frens {
 		struct RomEntry {
 			char Path[ROMLISTER_MAXPATH];  // Without dirname
 			bool IsDirectory;
+			// TV region letter from the file's iNES header (NesRegion.h):
+			// N NTSC, P PAL, M multi, D Dendy, '?' iNES 1.0 (not known).
+			// Read once here, never while drawing. ' ' for directories.
+			char Region;
 		};
 		RomLister( void *buffer, size_t buffersize);
 		~RomLister();
