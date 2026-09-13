@@ -103,7 +103,7 @@ Button mapping — active low, bytes 6 and 7:
 - At 80 MHz SPI, 320-wide: ~14.8 ms/frame → ceiling ~67 fps; 240-wide: ~11.5 ms/frame → ceiling ~87 fps (both sufficient for NES 60 fps)
 
 ### Frame Rate
-- `speed_control()` in `InfoNES_LoadFrame()` caps at 60 fps (waits if frame finishes early)
+- `speed_control()` in `InfoNES_LoadFrame()` paces frames at `nes_frame_period_us` — 16639 µs, NTSC's 60.0988 Hz, not the flat 16666 it used to use (waits if the frame finishes early). See [Region](#region-ntsc-and-pal) for the PAL value.
 - **Adaptive display frame skip**: when a frame misses its 16666 µs deadline,
   `speed_control()` clears `draw_this_frame` and `InfoNES_PostDrawLine()` returns
   immediately for the whole next frame — emulated in full, never sent to the
@@ -118,6 +118,45 @@ Button mapping — active low, bytes 6 and 7:
   A deadline more than 100 ms stale (ROM load, menu, flash write) resyncs rather
   than trying to catch up over thousands of frames.
 - The 60 fps cap + 80 MHz SPI + 300 MHz RP2350 achieves correct NES game speed; RP2040 at 252 MHz is sufficient but closer to the margin
+
+### Region (NTSC and PAL)
+
+InfoNES has no PAL support at all — the core always runs 262 scanlines — so a
+PAL ROM paced at the NTSC rate plays about **20% fast**, music and pitch
+included. `applyRegionTiming()` in `main.cpp` corrects most of that from the
+ROM's 16 byte header, with the shared reader in `NesRegion.h`:
+
+| | NTSC | PAL / Dendy |
+|---|---|---|
+| frame period | 16639 µs (60.0988 Hz) | **19997 µs** (50.007 Hz) |
+| audio rate | 22050 Hz | **18350 Hz** |
+
+**The sound rate is not optional and not obvious.** The APU emits a fixed
+number of samples per *emulated* frame, so pacing at 50 Hz produces five
+sixths as many samples a second. Left at 22050 that is a permanent underrun;
+opening the DAC at five sixths balances it *and* fixes the pitch in one
+stroke, since samples computed for 22050 played at 18350 come out a factor
+0.8322 lower against the 0.8321 a PAL game wants. Same reasoning as
+[the Circle port's](#region-ntsc-and-pal).
+
+Applied at game start (before `AUDIO_CORE_START()`, so core1 opens the DAC at
+the right rate) and reset to NTSC when the menu comes back.
+
+**I2S only.** The audio rate has to follow the pacing, and only the I2S device
+is opened per game — pacing a PWM target at 50 Hz while its PWM stays at 22050
+would trade "runs fast" for "underruns 17% of every second", which is worse.
+On PWM targets `applyRegionTiming()` always selects NTSC.
+
+**Detection believes only a NES 2.0 header**, for the reason given in the
+Circle section: iNES 1.0's PAL bit is clear on practically every dump, so
+reading it would mislabel more often than it helps. An undetected PAL ROM runs
+exactly as it did before. Check a file with `xxd -l 16 game.nes` — byte 7 bits
+2–3 must be 2, then byte 12 bits 0–1 are the region. The region is logged at
+game start: `Region: P — frame 19997 us, audio 18350 Hz`.
+
+**Still wrong afterwards:** 262 scanlines rather than PAL's 312, so games that
+time raster effects to the longer frame can misbehave. Fixing that means real
+PAL support in the core, which costs the untouched-upstream property.
 
 ### ROM Loading Flow
 1. At startup, `initSDCard()` is called if `SDCARD_PIN_SPI0_CS >= 0` (i.e., on targets with an SD slot). `isFatalError` is set to `!initSDCard()`.
@@ -914,7 +953,10 @@ before, which is the safe way to be wrong.
 
 `NesRegion.h` is the single copy of that bit twiddling, used by both the
 emulator side and the ROM menu, so the letter shown in the list and the timing
-actually used can never disagree about a file.
+actually used can never disagree about a file. It lives at the top of
+`software/infones/` rather than in `circle/`, because **the pico-sdk port uses
+it too** — Circle's `-I $(INFONES)` already reached it there, so no include
+changed when it moved.
 
 To check a ROM by hand: `xxd -l 16 game.nes`, then read bytes 7 and 12.
 

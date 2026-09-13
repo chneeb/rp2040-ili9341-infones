@@ -121,11 +121,6 @@ void i2s_output_init(int sample_rate, i2s_fill_fn fill)
         i2s_offset = pio_add_program(i2s_pio, &audio_i2s_program);
         audio_i2s_program_init(i2s_pio, i2s_sm, i2s_offset, I2S_DATA_PIN, I2S_CLOCK_PIN_BASE);
 
-        /* 64 PIO cycles per stereo frame (32 bits, BCLK toggles twice per bit),
-         * so the 24.8 fixed-point divider is sysclk*4/rate. */
-        uint32_t divider = clock_get_hz(clk_sys) * 4 / (uint32_t)sample_rate;
-        pio_sm_set_clkdiv_int_frac(i2s_pio, i2s_sm, divider >> 8u, divider & 0xffu);
-
         dma_a = dma_claim_unused_channel(true);
         dma_b = dma_claim_unused_channel(true);
         i2s_claimed = true;
@@ -139,6 +134,12 @@ void i2s_output_init(int sample_rate, i2s_fill_fn fill)
         pio_sm_exec(i2s_pio, i2s_sm,
                     pio_encode_jmp(i2s_offset + audio_i2s_offset_entry_point));
     }
+
+    /* Every call, not just the first: the rate changes between an NTSC game
+     * and a PAL one. 64 PIO cycles per stereo frame (32 bits, BCLK toggles
+     * twice per bit), so the 24.8 fixed-point divider is sysclk*4/rate. */
+    uint32_t divider = clock_get_hz(clk_sys) * 4 / (uint32_t)sample_rate;
+    pio_sm_set_clkdiv_int_frac(i2s_pio, i2s_sm, divider >> 8u, divider & 0xffu);
 
     i2s_config_channel(dma_a, dma_b, buf_a);
     i2s_config_channel(dma_b, dma_a, buf_b);

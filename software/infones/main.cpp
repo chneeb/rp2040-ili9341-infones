@@ -115,6 +115,7 @@
 
 #include "audio.h"
 #include "FrensHelpers.h"
+#include "NesRegion.h"
 #ifdef I2S_AUDIO
 #include "i2s_output.h"
 #ifndef I2S_GAIN_PERCENT
@@ -887,6 +888,55 @@ static void __not_in_flash_func(blink_led)(void)
 {
     gpio_xor_mask(1<<LED_PIN);
 }
+/* Region timing. InfoNES itself has no PAL support — the core always runs 262
+ * scanlines — so a PAL ROM would otherwise be paced at the NTSC rate and play
+ * about 20% fast, music included. The platform layer corrects most of that
+ * with two numbers, exactly as the Circle port does.
+ *
+ * The sound rate is not optional and not obvious: the APU emits a fixed number
+ * of samples per *emulated* frame, so pacing at 50 Hz produces five sixths as
+ * many samples a second. Left at 22050 that is a permanent underrun; opening
+ * the DAC at five sixths balances it AND fixes the pitch in one stroke, since
+ * samples computed for 22050 played at 18350 come out a factor 0.8322 lower —
+ * against the 0.8321 a PAL game wants.
+ *
+ * Still wrong afterwards: a PAL machine has 312 scanlines and correspondingly
+ * more vblank, and this still has 262. Games that time raster effects to the
+ * longer frame can misbehave. Fixing that means real PAL support in the core. */
+#define NES_FRAME_PERIOD_NTSC_US 16639   /* 60.0988 Hz */
+#define NES_FRAME_PERIOD_PAL_US  19997   /* 50.007 Hz  */
+#define NES_AUDIO_RATE_NTSC      22050
+#define NES_AUDIO_RATE_PAL       18350   /* five sixths — what the APU makes at 50 Hz */
+
+static uint32_t nes_frame_period_us = NES_FRAME_PERIOD_NTSC_US;
+static int      nes_audio_rate      = NES_AUDIO_RATE_NTSC;
+
+/* Pick the pacing for the ROM about to run, from its 16 byte iNES header.
+ * Detection believes only a NES 2.0 header (see NesRegion.h) — an undetected
+ * PAL ROM behaves exactly as it did before, which is the safe way to be wrong.
+ *
+ * Only done where the audio rate can follow, i.e. I2S, whose device is opened
+ * per game. Pacing a PWM target at 50 Hz while its PWM stays at 22050 would
+ * trade "runs fast" for "underruns 17% of every second", which is worse. */
+static void applyRegionTiming(const uint8_t *rom)
+{
+    nes_frame_period_us = NES_FRAME_PERIOD_NTSC_US;
+    nes_audio_rate      = NES_AUDIO_RATE_NTSC;
+#ifdef I2S_AUDIO
+    if (!rom) return;
+    enum TNesRegion region = NesRegionFromHeader(rom);
+    if (region == NesRegionPAL || region == NesRegionDendy)
+    {
+        nes_frame_period_us = NES_FRAME_PERIOD_PAL_US;
+        nes_audio_rate      = NES_AUDIO_RATE_PAL;
+    }
+    printf("Region: %c — frame %lu us, audio %d Hz\n", NesRegionChar(region),
+           (unsigned long)nes_frame_period_us, nes_audio_rate);
+#else
+    (void)rom;
+#endif
+}
+
 /* Cleared by speed_control() when the previous frame missed its deadline:
  * the next frame is emulated in full but never sent to the panel. Read by
  * InfoNES_PostDrawLine(). */
@@ -898,7 +948,6 @@ static void __not_in_flash_func(speed_control)(void)
 
 // frame timing control
   uint64_t cur_time = time_us_64();
-  // 1/60 = 16666 us
   if (deadline == 0) deadline = cur_time;
 
   if ((int64_t)(cur_time - deadline) <= 0)
@@ -922,7 +971,7 @@ static void __not_in_flash_func(speed_control)(void)
        * catch up for thousands of frames. */
       if ((int64_t)(cur_time - deadline) > 100000) deadline = cur_time;
   }
-  deadline += 16666;
+  deadline += nes_frame_period_us;
 
   // blink_led();
 
@@ -1034,7 +1083,7 @@ void __not_in_flash_func(core1_main)()
      * is 20x more often than needed, while a tight loop hammers the DMA
      * registers over the bus and steals bandwidth from core0's emulation and
      * from the display DMA. */
-    i2s_output_init(22050, i2s_pull);
+    i2s_output_init(nes_audio_rate, i2s_pull);
 
     /* Nothing in this loop may call into flash: core0 erases and programs
      * flash (ROM copy, SRAM saves) with XIP down, and the multicore lockout
@@ -1938,9 +1987,11 @@ int main()
             // try ROM if fatal error
             if(isFatalError){
                 romSelector_.init(NES_FILE_ADDR);
+                applyRegionTiming(romSelector_.getCurrentROM());
                 AUDIO_CORE_START();
                 InfoNES_Main();
                 AUDIO_CORE_STOP();
+                applyRegionTiming(nullptr);   /* menu runs at NTSC pacing */
                 /* InfoNES_Main returns when the player quits or switches ROM
                  * via SELECT+LEFT/RIGHT (romSelector_ has already advanced
                  * selectedIndex_). Loop back to run the next ROM rather than
@@ -1952,9 +2003,11 @@ int main()
         }
         printf("Now playing: %s\n", selectedRom);
         romSelector_.init(NES_FILE_ADDR);
+        applyRegionTiming(romSelector_.getCurrentROM());
         AUDIO_CORE_START();
         InfoNES_Main();
         AUDIO_CORE_STOP();
+        applyRegionTiming(nullptr);   /* menu runs at NTSC pacing */
         selectedRom[0] = 0;
     }
 

@@ -7,6 +7,10 @@
 //  the sound rate, and the ROM menu, which uses it to label the list. One copy
 //  of the bit twiddling so the two can never disagree about a file.
 //
+//  Lives at the top of software/infones/ because BOTH ports use it: the Circle
+//  one (which had it first) and the pico-sdk one. Circle's -I $(INFONES) and
+//  CMake's source directory both reach it, so neither side's include changes.
+//
 //  Deliberately free of both Circle and InfoNES headers - it is handed a raw
 //  16 bytes and knows nothing else.
 //
