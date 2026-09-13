@@ -213,6 +213,28 @@ const uint LED_PIN = PICO_DEFAULT_LED_PIN;
 #endif
 WORD scanline_buf_internal_1[SCANLINE_BUF_WORDS];
 WORD scanline_buf_internal_2[SCANLINE_BUF_WORDS];
+
+/* One whole frame, handed to the panel in a single DMA.
+ *
+ * The per-scanline DMA this replaces could not reach 60 fps, and no amount of
+ * frame-dropping could make it: 232 lines x 640 bytes at the 75 MHz the SPI
+ * actually runs is 15.8 ms of pure transfer against a 16.67 ms budget, so the
+ * bus has to be busy essentially all of the time — and it was not. Between
+ * lines it sat idle while the code returned from a blocking wait, scaled 320
+ * pixels and re-armed the channel. A few microseconds each, 232 times a frame,
+ * is milliseconds gone, and they are the milliseconds that decide 60 fps.
+ *
+ * With the frame accumulated in RAM there is one transfer per frame: the bus
+ * never goes idle, and it runs in the background while the next frame is
+ * emulated. 320x232x2 = 145 KB, which the RP2350's 520 KB can afford. */
+#define NES_DRAWN_LINES (NES_LAST_SCANLINE - NES_FIRST_SCANLINE + 1)
+static WORD frame_buf[DISPLAY_WIDTH * NES_DRAWN_LINES];
+
+/* Row `line` of the frame buffer, for InfoNES to render straight into. */
+static inline WORD *frame_row(int line)
+{
+    return frame_buf + (size_t)(line - NES_FIRST_SCANLINE) * DISPLAY_WIDTH;
+}
 WORD scanline_buf_outgoing[SCANLINE_BUF_WORDS];
 // BYTE framebuffer[256*240];
 // uint8_t screen_x;
@@ -1035,57 +1057,48 @@ static void applyRegionTiming(const uint8_t *rom)
     }
 }
 
-/* Cleared by speed_control() when the previous frame missed its deadline:
- * the next frame is emulated in full but never sent to the panel. Read by
- * InfoNES_PostDrawLine(). */
-volatile bool draw_this_frame = true;
+/* Send the frame that has just been finished, unless the previous one is still
+ * going out. Called from InfoNES_LoadFrame() at the start of vblank.
+ *
+ * Dropping only when the bus is genuinely still busy is the whole scheduling
+ * policy now, and it needs no tuning: the transfer costs no CPU, so there is
+ * nothing to trade against emulation and nothing to steer. Three attempts at
+ * steering it — a frame deadline, a queue level, a cadence — are gone with the
+ * per-line DMA that made them necessary. */
+static void __not_in_flash_func(present_frame)(void)
+{
+    if (dma_channel_is_busy(display_dma_channel))
+    {
+        return;             /* previous frame still on the wire — drop this one */
+    }
 
-/* Whether a game is running, as opposed to the menu: only then is the audio
- * ring being fed, and only then can its level be used for pacing. */
-volatile bool emulator_running = false;
+    /* Wait out the tail of the last transfer before touching the panel's
+     * registers, then point it at the window and hold CS for the frame. */
+    while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
+    display_set_address(0, NES_FIRST_SCANLINE, DISPLAY_WIDTH - 1, NES_LAST_SCANLINE);
+    gpio_put(DISPLAY_PIN_DC, 1);
+    gpio_put(DISPLAY_PIN_CS, 0);
 
-/* Below this many samples queued, the emulator is not keeping up with the DAC
- * and the display transfer is what has to give. Half the throttle's target,
- * so ~2 frames of audio in hand, on top of the DAC's own 512-sample
- * ping-pong. */
-/* Queue levels the cadence is steered by, against the throttle's 1500 target.
- * The gap between low and high is wide enough that the queue's own swing
- * between drawn and dropped frames cannot flap the cadence. */
-#define AUDIO_LOW_WATER_SAMPLES  (TARGET_LATENCY_SAMPLES * 7 / 15)   /* 700  */
-#define AUDIO_HIGH_WATER_SAMPLES (TARGET_LATENCY_SAMPLES * 4 / 5)    /* 1200 */
-#define AUDIO_PANIC_SAMPLES      (TARGET_LATENCY_SAMPLES * 7 / 30)   /* 350  */
-
-/* The cadence is a ratio in sixteenths rather than a handful of fixed
- * patterns. Fixed patterns hunt: with a 22 ms drawn frame the affordable rate
- * falls between "2 of 3" and "every other", so the controller alternates
- * between them and the judder is as irregular as the bang-bang it replaced.
- * Sixteenths let it sit still, and the Bresenham accumulator spreads the drops
- * one at a time. */
-#define CADENCE_DEN 16
-#define CADENCE_MIN 4                /* never below a quarter of the frames  */
+    dma_channel_set_trans_count(display_dma_channel, sizeof(frame_buf), false);
+    dma_channel_set_read_addr(display_dma_channel, frame_buf, true);
+}
 
 static void __not_in_flash_func(speed_control)(void)
 {
   static uint64_t deadline = 0;
-  static int cadence = CADENCE_DEN; /* drawn frames per CADENCE_DEN        */
-  static int cadence_acc = 0;       /* spreads the drops evenly            */
-  static int drawn_run = 0;         /* draws since the last parity flip    */
-  static int window_frames = 0;     /* frames in the current re-aim window  */
-  static int32_t window_min = INT32_MAX;  /* lowest queue level seen in it  */
 
 // frame timing control
   uint64_t cur_time = time_us_64();
   if (deadline == 0) deadline = cur_time;
 
-  /* Rate cap. This is what paces the menu and DISABLE_AUDIO targets; during
-   * play the audio ring throttle in InfoNES_SoundOutput() is the real clock
-   * and this rarely has to wait.
+  /* A plain rate cap. During play the audio ring throttle in
+   * InfoNES_SoundOutput() is the real clock and this rarely has to wait; it is
+   * what paces the menu and DISABLE_AUDIO targets.
    *
    * Lateness is never carried forward. The throttle paces every frame to the
-   * DAC whether it was drawn or dropped — a dropped frame does not finish
-   * early, it just parks core0 in the throttle instead of in the DMA wait —
-   * so an accumulated offset can never be worked off, and a deadline that
-   * remembers one is a deadline that is late for ever. */
+   * DAC, so an accumulated offset can never be worked off, and a deadline that
+   * remembers one is late for ever — which is how this froze the picture
+   * twice. */
   if ((int64_t)(cur_time - deadline) <= 0)
   {
       while ((int64_t)(time_us_64() - deadline) < 0) tight_loop_contents();
@@ -1095,88 +1108,6 @@ static void __not_in_flash_func(speed_control)(void)
       deadline = cur_time;
   }
   deadline += nes_frame_period_us;
-
-  /* Draw or drop this frame.
-   *
-   * Two things are separate here, and conflating them is what made the last
-   * attempt feel sluggish:
-   *
-   *   WHAT to measure — the audio queue, because the APU generates a fixed
-   *   367.5 samples per *emulated* frame, so the real cost of an overrun is
-   *   the sound going slow and breaking up, not a slow picture. The queue
-   *   measures exactly that and closes the loop: drawing drains it, dropping
-   *   hands ~14.8 ms straight back to emulation and refills it.
-   *
-   *   HOW to act on it — a cadence, not a per-frame decision. Deciding frame
-   *   by frame is bang-bang control: it runs six draws, dips below the mark,
-   *   then drops four in a row. The average rate is fine but the judder is
-   *   irregular, and irregular judder reads as far more sluggish than a
-   *   steady lower rate. So the queue picks a cadence, slowly, and the
-   *   cadence is applied evenly by a Bresenham accumulator.
-   */
-#if defined(DISABLE_AUDIO)
-  draw_this_frame = true;           /* no audio to starve, nothing to trade */
-#else
-  if (!emulator_running)
-  {
-      /* The menu feeds no audio, so the queue says nothing about it. */
-      draw_this_frame = true;
-      cadence = 0;
-      cadence_acc = 0;
-  }
-  else
-  {
-      int level = audioRing.readable_size();
-      if (level < window_min) window_min = level;
-      window_frames++;
-
-      /* Re-aim every 8 frames, or at once if the queue is nearly out: it
-       * holds about 4 frames of audio, so a slow window would starve before
-       * it reacted. One sixteenth at a time, so the picture rate never jumps
-       * visibly. */
-      if (level < AUDIO_PANIC_SAMPLES)
-      {
-          cadence -= 2;
-          window_frames = 0;
-          window_min = INT32_MAX;
-      }
-      else if (window_frames >= 8)
-      {
-          if (window_min < AUDIO_LOW_WATER_SAMPLES)       cadence--;
-          else if (window_min > AUDIO_HIGH_WATER_SAMPLES) cadence++;
-          window_frames = 0;
-          window_min = INT32_MAX;
-      }
-      if (cadence < CADENCE_MIN) cadence = CADENCE_MIN;
-      if (cadence > CADENCE_DEN) cadence = CADENCE_DEN;
-
-      cadence_acc += cadence;
-      if (cadence_acc >= CADENCE_DEN)
-      {
-          cadence_acc -= CADENCE_DEN;
-          draw_this_frame = true;
-      }
-      else
-      {
-          draw_this_frame = false;
-      }
-
-      /* At exactly half the frames the drawn ones are all of one parity, and
-       * a sprite that flickers every frame — Mario's invincibility after a
-       * hit — lands entirely on the dropped ones and vanishes until something
-       * perturbs the timing. Drop one extra frame every 8 draws to invert the
-       * parity. Only needed at 8/16; every other ratio rotates on its own. */
-      if (cadence == CADENCE_DEN / 2 && draw_this_frame && ++drawn_run >= 8)
-      {
-          drawn_run = 0;
-          draw_this_frame = false;
-      }
-      else if (cadence != CADENCE_DEN / 2)
-      {
-          drawn_run = 0;
-      }
-  }
-#endif
 
   // blink_led();
 
@@ -1340,6 +1271,7 @@ int __not_in_flash_func(InfoNES_LoadFrame)()
  *. blink the led and control speed
  */
     speed_control();
+    present_frame();
 
 /*
  *
@@ -1524,11 +1456,7 @@ void __not_in_flash_func(drawWorkMeter)(int line)
 
 void __not_in_flash_func(RomSelect_PreDrawLine)(int line)
 {
-    if(line % 2 == 0){
-        RomSelect_SetLineBuffer(scanline_buf_internal_1, 256);
-    }else{
-        RomSelect_SetLineBuffer(scanline_buf_internal_2, 256);
-    }
+    RomSelect_SetLineBuffer(frame_row(line), 256);
 }
 
 /*
@@ -1549,20 +1477,11 @@ void __not_in_flash_func(InfoNES_PreDrawLine)(int line)
 
     currentLineBuffer_ = b;
 #endif
-    if(line % 2 == 0){
-        InfoNES_SetLineBuffer(scanline_buf_internal_1, 256);
-    }else{
-        InfoNES_SetLineBuffer(scanline_buf_internal_2, 256);
-    }
+    InfoNES_SetLineBuffer(frame_row(line), 256);
 }
 
 void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
 {
-    /* Frame dropped by speed_control(): emulate it, but send nothing. The
-     * in-flight DMA from the last drawn frame is waited for below, on the
-     * first line of the next drawn one. */
-    if (!draw_this_frame) return;
-
 #if 0
 #if !defined(NDEBUG)
     util::WorkMeterMark(0xffff);
@@ -1644,24 +1563,9 @@ void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
 #if 0
                  spi_write_blocking(DISPLAY_SPI_PORT, (uint8_t *)scanline_buf_internal, 256*2);
 #endif
-    WORD *fb;
-    if(line % 2 == 0){
-        fb = scanline_buf_internal_1;
-    }else{
-        fb = scanline_buf_internal_2;
-    }        
-    dma_channel_wait_for_finish_blocking(display_dma_channel);
-    if (line == NES_FIRST_SCANLINE) {
-        /* First rendered scanline: drain SPI TX FIFO then drive CS low for the frame.
-         * On SHARED_SPI_BUS targets also re-issue display_set_address to correct any
-         * write-pointer corruption caused by SD card traffic on the shared bus. */
-        while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
-#ifdef SHARED_SPI_BUS
-        display_set_address(0, NES_FIRST_SCANLINE, DISPLAY_WIDTH - 1, NES_LAST_SCANLINE);
-#endif
-        gpio_put(DISPLAY_PIN_DC, 1);
-        gpio_put(DISPLAY_PIN_CS, 0);
-    }
+    /* Widen this row in place. Nothing is sent here any more — the whole frame
+     * goes out in one transfer from InfoNES_LoadFrame(). */
+    WORD *fb = frame_row(line);
 #if DISPLAY_WIDTH == 320
     /* Scale NES 256px wide → 320px wide (nearest-neighbour, right-to-left in-place). */
     for (int i = 319; i >= 0; i--) fb[i] = fb[i * 256 / 320];
@@ -1669,8 +1573,6 @@ void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
     /* Crop NES 256px wide → 240px wide: drop 8px overscan on each side. */
     for (int i = 0; i < 240; i++) fb[i] = fb[i + 8];
 #endif
-    dma_channel_set_trans_count(display_dma_channel, DISPLAY_WIDTH * 2, false);
-    dma_channel_set_read_addr(display_dma_channel, fb, true);
                 /* Set CS high to ignore any traffic on SPI bus. */
                 // gpio_put(DISPLAY_PIN_CS, 1);
 
@@ -2194,9 +2096,7 @@ int main()
                 romSelector_.init(NES_FILE_ADDR);
                 applyRegionTiming(romSelector_.getCurrentROM());
                 AUDIO_CORE_START();
-                emulator_running = true;
                 InfoNES_Main();
-                emulator_running = false;
                 AUDIO_CORE_STOP();
                 applyRegionTiming(nullptr);   /* menu runs at NTSC pacing */
                 /* InfoNES_Main returns when the player quits or switches ROM
@@ -2212,9 +2112,7 @@ int main()
         romSelector_.init(NES_FILE_ADDR);
         applyRegionTiming(romSelector_.getCurrentROM());
         AUDIO_CORE_START();
-        emulator_running = true;
         InfoNES_Main();
-        emulator_running = false;
         AUDIO_CORE_STOP();
         applyRegionTiming(nullptr);   /* menu runs at NTSC pacing */
         selectedRom[0] = 0;

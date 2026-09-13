@@ -104,56 +104,36 @@ Button mapping — active low, bytes 6 and 7:
 
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` paces frames at `nes_frame_period_us` — 16639 µs, NTSC's 60.0988 Hz, not the flat 16666 it used to use (waits if the frame finishes early). See [Region](#region-ntsc-and-pal) for the PAL value.
-- **Display frames are dropped on the audio queue's level, not on a clock,**
-  and at an evenly spread **cadence** rather than frame by frame.
-  `speed_control()` steers a ratio in sixteenths from
-  `audioRing.readable_size()`, a Bresenham accumulator spreads the drops, and
-  `InfoNES_PostDrawLine()` returns
-  immediately for a whole dropped frame — emulated in full, never sent to the
-  panel. A drawn 320-wide frame costs ~14.8 ms of SPI at 80 MHz, most of the
-  budget, so dropping the transfer hands that time straight back to emulation.
-- **Why the queue and not the frame deadline.** The APU generates a fixed 367.5
-  samples per *emulated* frame, so if emulation falls behind, the sound goes
-  slow and the gap is padded — the real cost of an overrun is audible, not
-  visual. The queue measures exactly that, and closes the loop: drawing drains
-  it, dropping refills it, and if drawing every frame is affordable the
-  throttle holds it at its target and nothing is ever dropped.
-- **Two attempts to infer it from a clock failed, in opposite directions**, and
-  are worth not repeating. The audio ring throttle in `InfoNES_SoundOutput()`
-  is the real master clock: it holds core0 until the DAC has drained, so the
-  frame rate is *DAC rate / 367.5* — 60.000 fps at 22050 Hz, 49.93 at 18350 —
-  and **every frame ends ~30 µs late** against the 60.0988 / 50.007 Hz the
-  period is derived from.
-    - A knife-edge "late means behind" test read that as behind for ever:
-      every frame dropped, **picture frozen while emulation and sound ran on
-      perfectly**.
-    - An eighth-of-a-period tolerance swallowed real overruns too — a 22 ms
-      drawn frame is only 2.0 ms late in PAL — so **nothing was ever dropped**,
-      45 fps against the 49.93 the DAC wanted, sound slow and breaking up.
-    - Tightening the tolerance did not help either, and this is the part that
-      kills the whole approach: **a dropped frame does not finish early.** The
-      throttle paces it to the DAC just the same; it only parks core0 in the
-      throttle instead of the DMA wait. So an accumulated offset can never be
-      worked off, and a deadline that remembers one is late for ever.
-  `speed_control()` therefore still caps the rate (that is what paces the menu
-  and `DISABLE_AUDIO` targets) but **never carries lateness forward** — it
-  re-bases on real time instead.
-- **The actuator matters as much as the signal.** Deciding per frame is
-  bang-bang: it draws six, dips below the mark, then drops four in a row. The
-  average rate is fine and it feels awful — irregular judder reads as far more
-  sluggish than a steady lower rate. A handful of fixed patterns (every frame,
-  2 of 3, every other) is not enough either: with a 22 ms drawn frame the
-  affordable rate falls *between* two of them and the controller hunts.
-  Sixteenths let it sit still. Simulated against measured frame costs, the
-  ratio gives 36–52 fps with drops spread one at a time, against 31–42 fps in
-  bursts for the fixed patterns.
-- **The drop parity rotates.** Sustained dropping settles into an alternation,
-  so every drawn frame is of one parity, and a sprite that flickers every frame
-  — Mario's invincibility after a hit — can land entirely on the dropped ones
-  and vanish until something perturbs the timing. After 4 draws one extra frame
-  is dropped, inverting the parity; the worst case becomes a ~4 Hz blink.
-- **A frame is drawn at least every 8**, whatever the queue says, so a picture
-  that stops entirely is impossible rather than merely unlikely.
+- **One DMA per frame, from a full frame buffer** (`frame_buf`, 320x232x2 =
+  145 KB). `InfoNES_PreDrawLine()` points InfoNES at row `line` of it, so the
+  frame accumulates with no copying; `InfoNES_PostDrawLine()` only widens that
+  row in place; `present_frame()`, called from `InfoNES_LoadFrame()` at the
+  start of vblank, hands the whole thing over in a single transfer.
+- **Why the per-scanline DMA could not reach 60 fps.** 232 lines x 640 bytes at
+  the **75 MHz the SPI actually runs** (300 MHz / 4 — the requested 80 is not
+  reachable, the divider is even) is **15.8 ms of pure transfer against a
+  16.64 ms budget**. The bus has to be busy essentially all of the time, and
+  between lines it was not: it sat idle while the code returned from a blocking
+  wait, scaled 320 pixels and re-armed the channel. A few microseconds each,
+  232 times a frame, is milliseconds — and they are exactly the milliseconds
+  that decide 60 fps. **No scheduler could fix that**, which is why three
+  attempts at one (a frame deadline, the audio queue level, a steered cadence)
+  all failed: a frozen picture, sound going slow and breaking up, and judder
+  that felt worse than a lower steady rate.
+- **The scheduling policy is now one line**: if the previous frame is still on
+  the wire, drop this one. Nothing to tune — the transfer costs no CPU, so
+  there is nothing to trade against emulation. It is what the Circle port does.
+- **Sprite flicker survives.** Mario's post-hit invincibility toggles every
+  frame, and a picture at half rate can drop exactly the frames he is drawn on.
+  At full rate the question does not arise; the parity-rotation hack the old
+  scheduler needed is gone with it.
+- `speed_control()` is a plain rate cap, and **never carries lateness forward**.
+  During play the audio ring throttle in `InfoNES_SoundOutput()` is the real
+  clock (it holds core0 until the DAC has drained, so the frame rate is *DAC
+  rate / 367.5*); the cap is what paces the menu and `DISABLE_AUDIO` targets.
+  A deadline that remembers lateness froze the picture twice, because a dropped
+  frame does not finish early — the throttle paces it just the same.
+- **RAM**: 338 KB of the RP2350's 520 KB, 182 KB left for stack and heap.
 
 ### Region (NTSC and PAL)
 
