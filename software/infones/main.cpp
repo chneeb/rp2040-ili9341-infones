@@ -121,6 +121,46 @@
 #ifndef I2S_GAIN_PERCENT
 #define I2S_GAIN_PERCENT 100
 #endif
+
+/* Per-channel mix weights.
+ *
+ * The five APU channels arrive on different scales: a pulse is 0x11 * vol so
+ * 0..255, the triangle is a 0..255 waveform, noise is bare ApuC4Vol (0..15)
+ * and DPCM is 0..63. Putting them on a common scale is not the same as
+ * mixing them correctly — the 2A03's own mixer weights them unequally. Taking
+ * its linear approximation (pulse 0.00752 per unit, triangle 0.00851, noise
+ * 0.00494) relative to a pulse:
+ *
+ *   pulse     x1.00      already 0..255
+ *   triangle  x1.13      9/8
+ *   noise     x0.66      17 * 0.66 = 11, where 17 would merely make noise as
+ *                        loud as a pulse at the same volume setting
+ *   DPCM      —          left at 4; the linear approximation does not hold
+ *                        for DPCM's range and the real mixer compresses it
+ *
+ * Noise at 17 is ~50% hotter than the chip, which is heard as brushy
+ * percussion sitting on top of the music. Overridable per build
+ * (-DAPU_MIX_NOISE=<n>) for tuning by ear. */
+#ifndef APU_MIX_TRIANGLE_NUM
+#define APU_MIX_TRIANGLE_NUM 9
+#endif
+#ifndef APU_MIX_TRIANGLE_DEN
+#define APU_MIX_TRIANGLE_DEN 8
+#endif
+#ifndef APU_MIX_NOISE
+#define APU_MIX_NOISE 11
+#endif
+#ifndef APU_MIX_DPCM
+#define APU_MIX_DPCM 4
+#endif
+
+/* Loudest the weighted sum can be: both pulses + triangle + noise + DPCM. */
+#define APU_MIX_FULL_SCALE (255 + 255 + (255 * APU_MIX_TRIANGLE_NUM) / APU_MIX_TRIANGLE_DEN \
+                            + 15 * APU_MIX_NOISE + 63 * APU_MIX_DPCM)
+
+/* Full scale -> 32767 at gain 100, as 8.8 fixed point so the multiply stays
+ * inside 32 bits. Constant-folded; the weights never cost anything at run time. */
+#define I2S_MIX_SCALE_Q8 ((32767 * I2S_GAIN_PERCENT * 256) / (APU_MIX_FULL_SCALE * 100))
 #endif
 
 
@@ -765,10 +805,14 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
              /* The five channels do NOT share a range: the two pulses and the
               * triangle are 0..255 (pulse tables hold 0x11 * vol, vol 0..15),
               * noise is only 0..15 (ApuC4Vol) and DPCM 0..63. Normalise each
-              * to 0..255 and sum, giving 0..1275 — kept at full width rather
+              * to a common scale and sum, weighted as the 2A03's own mixer
+              * weights them (see APU_MIX_* above). Kept at full width rather
               * than averaged back down to a byte, since the DAC is 16-bit. */
              {
-                 int sum = w1 + w2 + w3 + w4 * 17 + w5 * 4;
+                 int sum = w1 + w2
+                         + (w3 * APU_MIX_TRIANGLE_NUM) / APU_MIX_TRIANGLE_DEN
+                         + w4 * APU_MIX_NOISE
+                         + w5 * APU_MIX_DPCM;
 
                  /* The APU's signal is UNIPOLAR: silence is 0, and the DC level
                   * rides up and down with how many channels are sounding. Track
@@ -781,10 +825,8 @@ void __not_in_flash_func(InfoNES_SoundOutput)(int samples, BYTE *wave1, BYTE *wa
                  dc_acc += (((int32_t)sum << 8) - dc_acc) >> 7;
                  int ac = sum - (dc_acc >> 8);
 
-                 /* Full scale (1275) -> 32767 at gain 100, saturating. Same
-                  * loudness as the old 8-bit path at the same gain, with the
-                  * quantisation step 256x smaller. */
-                 int v = (ac * 257 * I2S_GAIN_PERCENT) / 1000;
+                 /* Full scale -> 32767 at gain 100, saturating. */
+                 int v = (ac * I2S_MIX_SCALE_Q8) >> 8;
                  if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
                  *p++ = (int16_t)v;
              }

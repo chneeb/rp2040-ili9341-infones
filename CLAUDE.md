@@ -468,11 +468,26 @@ ST7789/PWM branch scales the sum by 16 into a `BYTE`; the ILI9341 `/4` branch
 reaches 332 on a loud frame — both wrap around inside the byte, heard as
 crackle on peaks.
 
-The I2S branch instead normalises each channel to 0..255 and sums
-(`w1 + w2 + w3 + w4*17 + w5*4`, so 0..1275 — kept at full width rather than
-averaged back into a byte) and **saturates** rather than wrapping. Full scale
-maps to 32767 at gain 100, so the gain means the same as it did on the old
-8-bit path — only the quantisation step is 256x smaller.
+The I2S branch instead sums the channels **weighted as the 2A03's own mixer
+weights them**, at full width rather than averaged back into a byte, and
+**saturates** rather than wrapping. Full scale maps to 32767 at gain 100.
+
+Putting the channels on a common scale is not the same as mixing them
+correctly. Taking the chip's linear approximation (pulse 0.00752 per unit,
+triangle 0.00851, noise 0.00494) relative to a pulse gives `APU_MIX_*` in
+`main.cpp`: triangle x9/8, **noise x11**, DPCM x4 (left alone — the linear
+approximation does not hold over DPCM's range and the real mixer compresses
+it). Noise at x17 — the value that merely makes it as loud as a pulse at the
+same volume setting — is ~50% hotter than the chip, and is heard as **brushy
+percussion** sitting on top of the music. Each weight is overridable per build
+(`-DAPU_MIX_NOISE=<n>`) for tuning by ear; the full-scale constant derives
+from them, so the level stays put whatever they are set to.
+
+Two things this cannot fix, worth not chasing: the mix is **linear** where the
+chip's is compressive, so loud multi-channel passages sum harder than they
+should; and the APU renders at 22050 Hz, so square-wave harmonics above 11 kHz
+**alias** back down as inharmonic tones. Both are inherent and both ports
+have them.
 
 **The APU's signal is unipolar — silence is 0, not 128** — and its DC level
 rides up and down with how many channels are sounding. That matters as soon as
