@@ -228,17 +228,34 @@ const uint LED_PIN = PICO_DEFAULT_LED_PIN;
  *
  * One buffer, not two: a second costs 145 KB and there is not that much RAM
  * left. The tearing a single buffer invites is handled by wait_for_row_sent()
- * below, which costs nothing. */
+ * below, which costs nothing.
+ *
+ * DISPLAY_FRAME_BUFFER is 0 on the RP2040, which cannot afford this at all:
+ * 264 KB of SRAM against 145 KB of frame plus the ~184 KB the emulator already
+ * needs links 65 KB over. That target keeps the original per-scanline DMA
+ * below — a lower ceiling, but it fits, and at its 63 MHz SPI a full frame is
+ * 18.8 ms against a 16.64 ms budget, so it was never going to hold 60 fps
+ * either way. Set from PICO_RP2350 in CMakeLists.txt. */
 #define NES_DRAWN_LINES (NES_LAST_SCANLINE - NES_FIRST_SCANLINE + 1)
-static WORD frame_buf[DISPLAY_WIDTH * NES_DRAWN_LINES];
 
+#if DISPLAY_FRAME_BUFFER
+static WORD frame_buf[DISPLAY_WIDTH * NES_DRAWN_LINES];
+#else
+/* Ping-pong scanline buffers: InfoNES renders into one while the other is on
+ * the wire. At least DISPLAY_WIDTH wide — the 320-wide scaling loop writes
+ * fb[0..319] in place, and a 256-wide buffer would spill into its neighbour. */
+static WORD scanline_buf_internal_1[SCANLINE_BUF_WORDS];
+static WORD scanline_buf_internal_2[SCANLINE_BUF_WORDS];
+#endif
+
+static int display_dma_channel;
+
+#if DISPLAY_FRAME_BUFFER
 /* Row `line` of the frame buffer, for InfoNES to render straight into. */
 static inline WORD *frame_row(int line)
 {
     return frame_buf + (size_t)(line - NES_FIRST_SCANLINE) * DISPLAY_WIDTH;
 }
-
-static int display_dma_channel;
 
 /* Hold the emulator off a row the transfer has not reached yet.
  *
@@ -263,6 +280,7 @@ static inline void __not_in_flash_func(wait_for_row_sent)(const WORD *row)
         tight_loop_contents();
     }
 }
+#endif /* DISPLAY_FRAME_BUFFER */
 // BYTE framebuffer[256*240];
 // uint8_t screen_x;
 // uint8_t screen_x_start;
@@ -1092,6 +1110,9 @@ static void applyRegionTiming(const uint8_t *rom)
  * per-line DMA that made them necessary. */
 static void __not_in_flash_func(present_frame)(void)
 {
+#if !DISPLAY_FRAME_BUFFER
+    /* Per-scanline path: the frame went out a line at a time as it was drawn. */
+#else
     if (dma_channel_is_busy(display_dma_channel))
     {
         return;             /* previous frame still on the wire — drop this one */
@@ -1106,6 +1127,7 @@ static void __not_in_flash_func(present_frame)(void)
 
     dma_channel_set_trans_count(display_dma_channel, sizeof(frame_buf), false);
     dma_channel_set_read_addr(display_dma_channel, frame_buf, true);
+#endif
 }
 
 static void __not_in_flash_func(speed_control)(void)
@@ -1481,8 +1503,13 @@ void __not_in_flash_func(drawWorkMeter)(int line)
 
 void __not_in_flash_func(RomSelect_PreDrawLine)(int line)
 {
+#if DISPLAY_FRAME_BUFFER
     wait_for_row_sent(frame_row(line));
     RomSelect_SetLineBuffer(frame_row(line), 256);
+#else
+    RomSelect_SetLineBuffer((line % 2 == 0) ? scanline_buf_internal_1
+                                            : scanline_buf_internal_2, 256);
+#endif
 }
 
 /*
@@ -1494,9 +1521,11 @@ void __not_in_flash_func(RomSelect_PreDrawLine)(int line)
  */
 void __not_in_flash_func(InfoNES_PreDrawLine)(int line)
 {
+#if DISPLAY_FRAME_BUFFER
     /* Before InfoNES renders into this row, make sure the frame still going
      * out has already been read from it. */
     wait_for_row_sent(frame_row(line));
+#endif
 
 #if 0
     util::WorkMeterMark(0xaaaa);
@@ -1507,7 +1536,12 @@ void __not_in_flash_func(InfoNES_PreDrawLine)(int line)
 
     currentLineBuffer_ = b;
 #endif
+#if DISPLAY_FRAME_BUFFER
     InfoNES_SetLineBuffer(frame_row(line), 256);
+#else
+    InfoNES_SetLineBuffer((line % 2 == 0) ? scanline_buf_internal_1
+                                          : scanline_buf_internal_2, 256);
+#endif
 }
 
 void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
@@ -1593,15 +1627,36 @@ void __not_in_flash_func(InfoNES_PostDrawLine)(int line)
 #if 0
                  spi_write_blocking(DISPLAY_SPI_PORT, (uint8_t *)scanline_buf_internal, 256*2);
 #endif
-    /* Widen this row in place. Nothing is sent here any more — the whole frame
-     * goes out in one transfer from InfoNES_LoadFrame(). */
+#if DISPLAY_FRAME_BUFFER
+    /* Widen this row in place. Nothing is sent here — the whole frame goes out
+     * in one transfer from InfoNES_LoadFrame(). */
     WORD *fb = frame_row(line);
+#else
+    /* No frame buffer: widen this line and put it on the wire by itself. */
+    WORD *fb = (line % 2 == 0) ? scanline_buf_internal_1 : scanline_buf_internal_2;
+    dma_channel_wait_for_finish_blocking(display_dma_channel);
+    if (line == NES_FIRST_SCANLINE) {
+        /* First rendered scanline: drain the SPI TX FIFO, then hold CS low for
+         * the frame. On SHARED_SPI_BUS targets also re-issue the address, to
+         * correct any write-pointer damage from SD traffic on the shared bus. */
+        while (spi_is_busy(DISPLAY_SPI_PORT)) tight_loop_contents();
+#ifdef SHARED_SPI_BUS
+        display_set_address(0, NES_FIRST_SCANLINE, DISPLAY_WIDTH - 1, NES_LAST_SCANLINE);
+#endif
+        gpio_put(DISPLAY_PIN_DC, 1);
+        gpio_put(DISPLAY_PIN_CS, 0);
+    }
+#endif
 #if DISPLAY_WIDTH == 320
     /* Scale NES 256px wide → 320px wide (nearest-neighbour, right-to-left in-place). */
     for (int i = 319; i >= 0; i--) fb[i] = fb[i * 256 / 320];
 #else
     /* Crop NES 256px wide → 240px wide: drop 8px overscan on each side. */
     for (int i = 0; i < 240; i++) fb[i] = fb[i + 8];
+#endif
+#if !DISPLAY_FRAME_BUFFER
+    dma_channel_set_trans_count(display_dma_channel, DISPLAY_WIDTH * 2, false);
+    dma_channel_set_read_addr(display_dma_channel, fb, true);
 #endif
                 /* Set CS high to ignore any traffic on SPI bus. */
                 // gpio_put(DISPLAY_PIN_CS, 1);

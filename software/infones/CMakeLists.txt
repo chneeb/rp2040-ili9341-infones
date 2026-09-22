@@ -263,8 +263,20 @@ else()
     message("Audio               : PWM on GP${AUDIO_PIN}")
 endif()
 
+# A full frame buffer (DISPLAY_WIDTH x drawn lines x 2 = 145 KB at 320x232) is
+# what lets the panel be fed by one uninterrupted DMA per frame. The RP2350's
+# 520 KB affords it; the RP2040's 264 KB does not — it links 65 KB over — so
+# that chip keeps the original per-scanline DMA path in main.cpp.
+if(PICO_RP2350)
+    set(DISPLAY_FRAME_BUFFER 1)
+else()
+    set(DISPLAY_FRAME_BUFFER 0)
+endif()
+message("Display path        : ${DISPLAY_FRAME_BUFFER} (1 = one DMA per frame, 0 = per scanline)")
+
 target_compile_definitions(infoNES PRIVATE
     HARDWARE_TARGET_${HARDWARE_TARGET}
+    DISPLAY_FRAME_BUFFER=${DISPLAY_FRAME_BUFFER}
     SDCARD_SPI_BUS=${SD_SPI}
     SDCARD_PIN_SPI0_CS=${SD_CS}
     SDCARD_PIN_SPI0_SCK=${SD_SCK}

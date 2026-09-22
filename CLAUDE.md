@@ -105,7 +105,7 @@ Button mapping — active low, bytes 6 and 7:
 ### Frame Rate
 - `speed_control()` in `InfoNES_LoadFrame()` paces frames at `nes_frame_period_us` — 16639 µs, NTSC's 60.0988 Hz, not the flat 16666 it used to use (waits if the frame finishes early). See [Region](#region-ntsc-and-pal) for the PAL value.
 - **One DMA per frame, from a full frame buffer** (`frame_buf`, 320x232x2 =
-  145 KB). `InfoNES_PreDrawLine()` points InfoNES at row `line` of it, so the
+  145 KB) — **RP2350 only**, see `DISPLAY_FRAME_BUFFER` below. `InfoNES_PreDrawLine()` points InfoNES at row `line` of it, so the
   frame accumulates with no copying; `InfoNES_PostDrawLine()` only widens that
   row in place; `present_frame()`, called from `InfoNES_LoadFrame()` at the
   start of vblank, hands the whole thing over in a single transfer.
@@ -148,6 +148,18 @@ Button mapping — active low, bytes 6 and 7:
   A deadline that remembers lateness froze the picture twice, because a dropped
   frame does not finish early — the throttle paces it just the same.
 - **RAM**: 338 KB of the RP2350's 520 KB, 182 KB left for stack and heap.
+- **`DISPLAY_FRAME_BUFFER` is 0 on the RP2040**, which cannot afford any of
+  this: 264 KB of SRAM against 145 KB of frame plus the ~184 KB the emulator
+  already needs links **65 KB over**. That chip keeps the original
+  per-scanline DMA path, which is still in `main.cpp` behind the switch
+  (set from `PICO_RP2350` in CMakeLists.txt, printed at configure time). Its
+  ceiling is lower and always was: at the RP2040's 63 MHz SPI a full 320-wide
+  frame is 18.8 ms against a 16.64 ms budget, so 60 fps was never reachable
+  there whatever the transfer looks like.
+- **Build all four targets after touching the video path.** The frame-buffer
+  change was validated on two RP2350 targets and silently broke the RP2040 one
+  for four commits; `-DPICO_BOARD=pico -DHARDWARE_TARGET=ORIGINAL_RP2040` is
+  the one that catches it, and it is a link error, not a runtime surprise.
 
 ### Region (NTSC and PAL)
 
