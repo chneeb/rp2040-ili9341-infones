@@ -119,9 +119,9 @@ void RomSelect_PadState(DWORD *pdwPad1, bool ignorepushed = false)
      * Buttons are active low. Byte layout per CLAUDE.md. */
     uint8_t nc[8] = {};
     uint8_t reg = 0x00;
-    if (i2c_write_blocking(NUNCHUCK_I2C_BUS, 0x52, &reg, 1, false) >= 0) {
+    if (i2c_write_timeout_us(NUNCHUCK_I2C_BUS, 0x52, &reg, 1, false, 10000) >= 0) {
         sleep_us(200);
-        if (i2c_read_blocking(NUNCHUCK_I2C_BUS, 0x52, nc, 8, false) == 8) {
+        if (i2c_read_timeout_us(NUNCHUCK_I2C_BUS, 0x52, nc, 8, false, 10000) == 8) {
             uint8_t b6 = nc[6];
             uint8_t b7 = nc[7];
             if (!(b7 & 0x01)) v |= _UP;
