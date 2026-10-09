@@ -6,6 +6,7 @@
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/flash.h"
+#include "flash_offset.h"
 #include <hardware/sync.h>
 
 #include "InfoNES_System.h"
@@ -630,7 +631,7 @@ void menu(uintptr_t NES_FILE_ADDR, char *errorMessage, bool isFatal)
                             size_t bufsize;
                             BYTE *buffer = (BYTE *)InfoNes_GetPPURAM(&bufsize);
 
-                            auto ofs = FLASH_ADDRESS - XIP_BASE;
+                            auto ofs = flash_offset_of(FLASH_ADDRESS);
                             // Restore the directory where the ROM was listed from
                             {
                                 char cwd[FF_MAX_LFN];

@@ -14,6 +14,7 @@
 #include <hardware/sync.h>
 #include <pico/multicore.h>
 #include <hardware/flash.h>
+#include "flash_offset.h"
 #include <memory>
 #include <math.h>
 //#include <util/dump_bin.h>
@@ -544,7 +545,7 @@ void saveNVRAM()
         static_assert((SRAM_SIZE & (FLASH_SECTOR_SIZE - 1)) == 0);
         if (auto addr = getCurrentNVRAMAddr())
         {
-            auto ofs = addr - XIP_BASE;
+            auto ofs = flash_offset_of(addr);
             printf("write flash %x\n", ofs);
             {
                 Frens::flash_lockout_start();
