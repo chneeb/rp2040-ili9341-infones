@@ -2142,7 +2142,9 @@ int main()
     // Flash mode doesn't reboot (read-only filesystem can't persist the choice,
     // and DISABLE_AUDIO removes the audio-restart reason for rebooting), so we
     // skip the file read on watchdog-induced boots that landed on flashfs.
-    if (watchdog_caused_reboot() && !isFatalError && !flashFsActive)
+    // The menu reboots with watchdog_enable(); only that counts, so a launch
+    // by a bootloader through watchdog_reboot() (e.g. uf2loader) shows the menu.
+    if (watchdog_enable_caused_reboot() && !isFatalError && !flashFsActive)
     {
         // Determine loaded rom
         printf("Rebooted by menu\n");
