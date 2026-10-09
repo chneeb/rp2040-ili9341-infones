@@ -86,6 +86,12 @@ Button mapping — active low, bytes 6 and 7:
 | Select | 6    | 0x10 |
 | Start  | 6    | 0x04 |
 
+A CardKB keyboard (tiny_agi, addr 0x5F) can be chained on the same bus. A reset in
+the middle of a transfer can leave either device holding SDA low, so
+`nunchuck_init()` first clocks SCL until SDA is released and sends a STOP
+(`nunchuck_bus_recover()`), and all controller transfers (also in `menu.cpp`) use
+the `_timeout_us` variants with 10 ms.
+
 ## Architecture
 
 ### Display Rendering
@@ -229,10 +235,24 @@ which runs 20% fast with nothing on screen to explain why.
 ### ROM Loading Flow
 1. At startup, `initSDCard()` is called if `SDCARD_PIN_SPI0_CS >= 0` (i.e., on targets with an SD slot). `isFatalError` is set to `!initSDCard()`.
 2. On WAVESHARE_LCD13 (no SD slot), `isFatalError = true` always — the flash ROM at `NES_FILE_ADDR` is used directly.
-3. If `watchdog_caused_reboot() && !isFatalError`: read `/currentloadedrom.txt` from SD card for the ROM path and start the emulator immediately.
+3. If `watchdog_enable_caused_reboot() && !isFatalError`: read `/currentloadedrom.txt` from SD card for the ROM path and start the emulator immediately.
 4. Otherwise: show the file-browser menu (`menu()`). If `isFatalError` (no SD card), the menu falls through to run the flash ROM.
 5. `menu()` never returns — when a game is selected it writes the path to `/currentloadedrom.txt` and calls `watchdog_reboot()`.
 6. After `InfoNES_Main()` exits (player quit), `selectedRom` is cleared and the menu is shown again.
+
+### Running under uf2loader
+
+`~/Source/uf2loader` (branch `restouch-port`) installs infoNES.uf2 from the SD
+card's `pico2-apps/`. Two things matter for that:
+- **Flash offsets:** on the RP2350, uf2loader starts the app from a partition at
+  8K that the bootrom maps to `0x10000000` (QMI ATRANS). `flash_range_*` take
+  physical offsets, so ROM writes go through `flash_offset_of()`
+  (`flash_offset.h`) instead of `addr - XIP_BASE`. On the RP2040 it returns the
+  plain offset.
+- **Menu vs. last ROM:** uf2loader starts apps with `watchdog_reboot(0, 0, 0)`,
+  which `watchdog_caused_reboot()` also reports. Step 3 above therefore checks
+  `watchdog_enable_caused_reboot()`, which only the ROM-selection reboot
+  (`watchdog_enable()`) sets, so a launch from uf2loader shows the menu.
 
 ### Flash writes vs. core1 (CRITICAL)
 
