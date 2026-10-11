@@ -1705,7 +1705,7 @@ int InfoNES_Menu()
 
 #ifdef CONTROLLER_NUNCHUCK
 // Every transfer gives up after this, so a misbehaving device on the bus can't
-// hang the emulator (8 bytes at 400kHz take well under 1ms)
+// hang the emulator (8 bytes at 100kHz take under 1ms)
 #define NUNCHUCK_TIMEOUT_US 10000
 
 // A reset in the middle of a read leaves the device that was sending (e.g. a
@@ -1737,30 +1737,58 @@ static void nunchuck_bus_recover() {
     sleep_us(5);
 }
 
+// True once the controller accepted the init sequence. Until then (or after a
+// failed read) nunchuck_read() repeats the init every NUNCHUCK_RETRY_MS, so a
+// controller that missed it at startup, or is plugged in later, still works.
+static bool nunchuck_ready = false;
+#define NUNCHUCK_RETRY_MS 500
+
+static bool nunchuck_write2(uint8_t reg, uint8_t value) {
+    uint8_t buf[2] = {reg, value};
+    return i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, buf, 2, false, NUNCHUCK_TIMEOUT_US) == 2;
+}
+
+// Unencrypted init, then data format 3 (8 byte reports, buttons in bytes 6
+// and 7). 100 kHz: without other devices on the bus there are only weak
+// pull-ups. The controller needs time between the writes; 1 ms was too short
+// for some of them, and a missed write left it in another format for good.
 static void nunchuck_init() {
     nunchuck_bus_recover();
-    i2c_init(NUNCHUCK_I2C_BUS, 400 * 1000);
+    i2c_init(NUNCHUCK_I2C_BUS, 100 * 1000);
     gpio_set_function(NUNCHUCK_SDA, GPIO_FUNC_I2C);
     gpio_set_function(NUNCHUCK_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(NUNCHUCK_SDA);
     gpio_pull_up(NUNCHUCK_SCL);
-    uint8_t init1[] = {0xF0, 0x55};
-    i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, init1, 2, false, NUNCHUCK_TIMEOUT_US);
-    sleep_ms(1);
-    uint8_t init2[] = {0xFB, 0x00};
-    i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, init2, 2, false, NUNCHUCK_TIMEOUT_US);
-    sleep_ms(1);
-    uint8_t init3[] = {0xFE, 0x03};
-    i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, init3, 2, false, NUNCHUCK_TIMEOUT_US);
-    sleep_ms(1);
+    nunchuck_ready = false;
+    if (!nunchuck_write2(0xF0, 0x55)) return;
+    sleep_ms(10);
+    if (!nunchuck_write2(0xFB, 0x00)) return;
+    sleep_ms(10);
+    if (!nunchuck_write2(0xFE, 0x03)) return;
+    sleep_ms(10);
+    nunchuck_ready = true;
 }
 
 static bool nunchuck_read(uint8_t data[8]) {
+    if (!nunchuck_ready) {
+        static uint32_t retry_at = 0;
+        uint32_t now = to_ms_since_boot(get_absolute_time());
+        if ((int32_t)(now - retry_at) < 0)
+            return false;
+        retry_at = now + NUNCHUCK_RETRY_MS;
+        nunchuck_init();
+        if (!nunchuck_ready)
+            return false;
+    }
     uint8_t reg = 0x00;
-    if (i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, &reg, 1, false, NUNCHUCK_TIMEOUT_US) < 0)
-        return false;
-    sleep_us(200);
-    return i2c_read_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, data, 8, false, NUNCHUCK_TIMEOUT_US) == 8;
+    bool ok = i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, &reg, 1, false, NUNCHUCK_TIMEOUT_US) == 1;
+    if (ok) {
+        sleep_us(200);
+        ok = i2c_read_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, data, 8, false, NUNCHUCK_TIMEOUT_US) == 8;
+    }
+    if (!ok)
+        nunchuck_ready = false;
+    return ok;
 }
 #endif /* CONTROLLER_NUNCHUCK */
 
