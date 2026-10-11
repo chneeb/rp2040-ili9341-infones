@@ -1737,15 +1737,27 @@ static void nunchuck_bus_recover() {
     sleep_us(5);
 }
 
-// True once the controller accepted the init sequence. Until then (or after a
-// failed read) nunchuck_read() repeats the init every NUNCHUCK_RETRY_MS, so a
+// True once the controller accepted the init sequence or answered a read.
+// Until then nunchuck_read() repeats the init every NUNCHUCK_RETRY_MS, so a
 // controller that missed it at startup, or is plugged in later, still works.
 static bool nunchuck_ready = false;
 #define NUNCHUCK_RETRY_MS 500
+// Failed reads in a row before the controller counts as gone and is
+// initialised again. A single failed read doesn't mean it lost its setup, and
+// while a game runs the controller refuses most init writes (reads work), so
+// going back to the init on one failed read could leave the game without input.
+#define NUNCHUCK_MAX_FAILED_READS 10
+// A refused init write is repeated a few times before the init gives up
+#define NUNCHUCK_WRITE_TRIES 5
 
 static bool nunchuck_write2(uint8_t reg, uint8_t value) {
     uint8_t buf[2] = {reg, value};
-    return i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, buf, 2, false, NUNCHUCK_TIMEOUT_US) == 2;
+    for (int i = 0; i < NUNCHUCK_WRITE_TRIES; i++) {
+        if (i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, buf, 2, false, NUNCHUCK_TIMEOUT_US) == 2)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
 }
 
 // Unencrypted init, then data format 3 (8 byte reports, buttons in bytes 6
@@ -1777,8 +1789,8 @@ static bool nunchuck_read(uint8_t data[8]) {
             return false;
         retry_at = now + NUNCHUCK_RETRY_MS;
         nunchuck_init();
-        if (!nunchuck_ready)
-            return false;
+        // Even if the init was refused, try a read: the controller keeps its
+        // setup across a reset of the Pico (the menu reads it the same way)
     }
     uint8_t reg = 0x00;
     bool ok = i2c_write_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, &reg, 1, false, NUNCHUCK_TIMEOUT_US) == 1;
@@ -1786,8 +1798,15 @@ static bool nunchuck_read(uint8_t data[8]) {
         sleep_us(200);
         ok = i2c_read_timeout_us(NUNCHUCK_I2C_BUS, NUNCHUCK_ADDR, data, 8, false, NUNCHUCK_TIMEOUT_US) == 8;
     }
-    if (!ok)
+    static int failed_reads = 0;
+    if (ok) {
+        failed_reads = 0;
+        nunchuck_ready = true;
+    }
+    else if (++failed_reads >= NUNCHUCK_MAX_FAILED_READS) {
+        failed_reads = 0;
         nunchuck_ready = false;
+    }
     return ok;
 }
 #endif /* CONTROLLER_NUNCHUCK */
